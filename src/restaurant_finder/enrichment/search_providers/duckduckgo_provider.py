@@ -22,6 +22,19 @@ logger = logging.getLogger(__name__)
 
 _SEARCH_URL = "https://html.duckduckgo.com/html/"
 
+# DuckDuckGo refuse souvent les User-Agent "bot" et renvoie alors 0 résultat.
+# Un UA navigateur réaliste est requis pour obtenir des résultats exploitables.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://html.duckduckgo.com/",
+}
+
 
 class DuckDuckGoSearchProvider(SearchProvider):
     """Recherche web via `html.duckduckgo.com` (pas de clé API requise)."""
@@ -35,6 +48,7 @@ class DuckDuckGoSearchProvider(SearchProvider):
             response = self._session.post(
                 _SEARCH_URL,
                 data={"q": query},
+                headers=_BROWSER_HEADERS,
                 timeout=self._settings.request_timeout_seconds,
             )
             response.raise_for_status()
@@ -65,6 +79,9 @@ class DuckDuckGoSearchProvider(SearchProvider):
 
             if len(results) >= max_results:
                 break
+
+        if not results:
+            logger.debug("DuckDuckGo : aucun résultat pour %r.", query)
 
         return results
 

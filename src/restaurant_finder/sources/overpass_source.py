@@ -7,12 +7,15 @@ sur cette zone -> parsing des éléments OSM en objets `Restaurant`.
 from __future__ import annotations
 
 import logging
+import re
+import time
 from collections.abc import Sequence
 
 import requests
 
 from restaurant_finder.config import DEFAULT_CATEGORY_LABELS, Settings
 from restaurant_finder.domain.models import BoundingBox, Restaurant
+from restaurant_finder.enrichment.instagram_normalize import to_profile_url
 from restaurant_finder.exceptions import RestaurantSourceError
 from restaurant_finder.geocoding.nominatim_client import NominatimGeocoder
 from restaurant_finder.sources.base import RestaurantSource
@@ -29,6 +32,9 @@ _OVERPASS_QUERY_TEMPLATE = """
 );
 out center tags;
 """
+
+#: Un timestamp OSM valide ressemble à "2026-07-29T22:17:47Z".
+_VALID_OSM_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
 
 class OverpassRestaurantSource(RestaurantSource):
@@ -66,7 +72,7 @@ class OverpassRestaurantSource(RestaurantSource):
     def _query_overpass(self, bbox: BoundingBox, categories: Sequence[str]) -> list[dict]:
         categories_pattern = "|".join(categories)
         query = _OVERPASS_QUERY_TEMPLATE.format(
-            timeout=self._settings.request_timeout_seconds,
+            timeout=self._settings.overpass_timeout_seconds,
             categories=categories_pattern,
             south=bbox.south,
             west=bbox.west,
@@ -75,27 +81,74 @@ class OverpassRestaurantSource(RestaurantSource):
         )
 
         endpoints = (self._settings.overpass_base_url, *self._settings.overpass_fallback_urls)
+        timeout = (
+            self._settings.overpass_connect_timeout_seconds,
+            self._settings.overpass_timeout_seconds,
+        )
         last_error: Exception | None = None
 
         for endpoint in endpoints:
             try:
-                response = self._session.post(
-                    endpoint,
-                    data={"data": query},
-                    timeout=self._settings.request_timeout_seconds,
-                )
-                response.raise_for_status()
-                payload = response.json()
-            except (requests.RequestException, ValueError) as exc:
+                elements = self._query_endpoint(endpoint, query, timeout)
+            except (requests.RequestException, ValueError, RestaurantSourceError) as exc:
                 logger.warning("Miroir Overpass indisponible (%s) : %s", endpoint, exc)
                 last_error = exc
                 continue
 
-            return payload.get("elements", [])
+            return elements
 
         raise RestaurantSourceError(
-            f"Échec de la requête Overpass sur tous les miroirs disponibles : {last_error}"
+            "Échec de la requête Overpass sur tous les miroirs disponibles. "
+            "Les serveurs OpenStreetMap publics sont probablement saturés : "
+            f"réessaie dans 1–2 minutes. Détail : {last_error}"
         ) from last_error
+
+    def _query_endpoint(
+        self,
+        endpoint: str,
+        query: str,
+        timeout: tuple[float, float],
+    ) -> list[dict]:
+        """Interroge un miroir ; en cas de saturation (406/429), réessaie une fois."""
+
+        attempts = 2
+        for attempt in range(1, attempts + 1):
+            logger.info(
+                "Interrogation Overpass via %s (essai %d/%d)...",
+                endpoint,
+                attempt,
+                attempts,
+            )
+            response = self._session.post(endpoint, data={"data": query}, timeout=timeout)
+
+            if response.status_code in {406, 429, 504} and attempt < attempts:
+                wait = self._settings.overpass_busy_retry_seconds
+                logger.warning(
+                    "Miroir %s saturé (HTTP %d). Nouvelle tentative dans %.0fs...",
+                    endpoint,
+                    response.status_code,
+                    wait,
+                )
+                time.sleep(wait)
+                continue
+
+            response.raise_for_status()
+            payload = response.json()
+            self._ensure_payload_is_usable(endpoint, payload)
+            return payload.get("elements", [])
+
+        raise RestaurantSourceError(f"Miroir Overpass saturé : {endpoint}")
+
+    @staticmethod
+    def _ensure_payload_is_usable(endpoint: str, payload: dict) -> None:
+        """Écarte les miroirs qui répondent 200 avec une base OSM invalide."""
+
+        timestamp = str((payload.get("osm3s") or {}).get("timestamp_osm_base") or "")
+        if not _VALID_OSM_TIMESTAMP.match(timestamp):
+            raise RestaurantSourceError(
+                f"Réponse Overpass invalide sur {endpoint} "
+                f"(timestamp_osm_base={timestamp!r}). Miroir probablement hors service."
+            )
 
     @staticmethod
     def _parse_element(element: dict, fallback_city: str) -> Restaurant | None:
@@ -120,6 +173,9 @@ class OverpassRestaurantSource(RestaurantSource):
         city = tags.get("addr:city") or fallback_city
 
         osm_id = f"{element.get('type', 'node')}/{element.get('id')}"
+        instagram_url = to_profile_url(
+            tags.get("contact:instagram") or tags.get("instagram")
+        )
 
         return Restaurant(
             osm_id=osm_id,
@@ -129,4 +185,7 @@ class OverpassRestaurantSource(RestaurantSource):
             city=city,
             latitude=latitude,
             longitude=longitude,
+            brand=tags.get("brand"),
+            operator=tags.get("operator"),
+            instagram_url=instagram_url,
         )

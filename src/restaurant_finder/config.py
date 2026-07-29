@@ -43,22 +43,30 @@ class Settings(BaseSettings):
     nominatim_rate_limit_seconds: float = 1.0
 
     # --- Données restaurants (Overpass) ---
-    # L'instance publique principale est parfois surchargée (timeouts, erreurs
-    # transitoires) : on bascule automatiquement sur des miroirs de secours.
+    # Les instances publiques sont souvent saturées (406 / timeouts). On essaie
+    # plusieurs miroirs ; un miroir qui répond 200 avec une base de données
+    # invalide / vide est écarté (ex. certains miroirs « fantômes »).
+    # Les retries HTTP sur Overpass sont désactivés : un échec = miroir suivant.
     overpass_base_url: str = "https://overpass-api.de/api/interpreter"
     overpass_fallback_urls: tuple[str, ...] = (
+        "https://z.overpass-api.de/api/interpreter",
         "https://lz4.overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
     )
+    overpass_timeout_seconds: int = 60
+    overpass_connect_timeout_seconds: float = 10.0
+    overpass_busy_retry_seconds: float = 8.0
     overpass_rate_limit_seconds: float = 1.0
-    default_categories: tuple[str, ...] = tuple(DEFAULT_CATEGORY_LABELS.keys())
+    # Par défaut : restaurants & cafés (les indépendants / bistrots ciblés).
+    # Les bars / pubs / fast-food restent disponibles via --category.
+    default_categories: tuple[str, ...] = ("restaurant", "cafe")
 
     # --- Enrichissement Instagram ---
+    # workers=1 : les backends de recherche publics supportent mal le parallèle.
     instagram_search_enabled: bool = True
-    instagram_search_max_workers: int = 3
-    instagram_search_delay_seconds: float = 1.5
-    instagram_match_threshold: int = 60  # score rapidfuzz (0-100)
-    instagram_max_search_results: int = 8
+    instagram_search_max_workers: int = 1
+    instagram_search_delay_seconds: float = 1.0
+    instagram_match_threshold: int = 55  # score rapidfuzz (0-100)
+    instagram_max_search_results: int = 10
 
     # --- Cache ---
     cache_enabled: bool = True

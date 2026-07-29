@@ -60,11 +60,37 @@ def test_find_returns_none_when_no_result_meets_threshold(sample_restaurant: Res
 def test_find_ignores_non_profile_instagram_urls(sample_restaurant: Restaurant) -> None:
     results = [
         SearchResult(title="Publication", url="https://www.instagram.com/p/ABC123/"),
+        SearchResult(title="Popular", url="https://www.instagram.com/popular/le-petit-bistrot/"),
         SearchResult(title="Le Petit Bistrot", url="https://www.instagram.com/lepetitbistrot/"),
     ]
     finder = InstagramFinder(_StubSearchProvider(results), _settings())
 
     assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot/"
+
+
+def test_find_uses_osm_instagram_without_searching(sample_restaurant: Restaurant) -> None:
+    sample_restaurant.instagram_url = "https://www.instagram.com/osm_handle/"
+    provider = _StubSearchProvider([])
+    finder = InstagramFinder(provider, _settings())
+
+    assert finder.find(sample_restaurant) == "https://www.instagram.com/osm_handle/"
+    assert provider.call_count == 0
+
+
+def test_find_boosts_handle_containing_city_name(sample_restaurant: Restaurant) -> None:
+    results = [
+        SearchResult(
+            title="Autre compte",
+            url="https://www.instagram.com/randomfoodie/",
+        ),
+        SearchResult(
+            title="Le Petit Bistrot Nice",
+            url="https://www.instagram.com/lepetitbistrot_lyon/",
+        ),
+    ]
+    finder = InstagramFinder(_StubSearchProvider(results), _settings(instagram_match_threshold=40))
+
+    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot_lyon/"
 
 
 def test_find_ignores_urls_from_other_domains(sample_restaurant: Restaurant) -> None:
@@ -84,4 +110,5 @@ def test_find_uses_cache_and_avoids_second_search(sample_restaurant: Restaurant)
 
     assert first is None
     assert second is None
-    assert provider.call_count == 1
+    # 3 formulations de requête au 1er passage, puis lecture cache.
+    assert provider.call_count == 3

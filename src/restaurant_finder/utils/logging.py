@@ -26,5 +26,5 @@ def setup_logging(verbose: bool = False) -> None:
 
     # Bibliothèques tierces trop verbeuses : on les calme, sauf en mode verbose.
     if not verbose:
-        for noisy_logger in ("urllib3", "requests"):
+        for noisy_logger in ("urllib3", "requests", "ddgs", "httpx", "httpcore"):
             logging.getLogger(noisy_logger).setLevel(logging.WARNING)

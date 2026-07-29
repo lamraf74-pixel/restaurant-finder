@@ -18,6 +18,7 @@ from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
 from restaurant_finder.export.base import Exporter
+from restaurant_finder.filtering.chain_filter import ChainRestaurantFilter
 from restaurant_finder.sources.base import RestaurantSource
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,12 @@ class RestaurantFinderService:
         source: RestaurantSource,
         settings: Settings,
         instagram_finder: InstagramFinder | None = None,
+        chain_filter: ChainRestaurantFilter | None = None,
     ) -> None:
         self._source = source
         self._settings = settings
         self._instagram_finder = instagram_finder
+        self._chain_filter = chain_filter or ChainRestaurantFilter()
 
     def find_restaurants(
         self,
@@ -45,6 +48,7 @@ class RestaurantFinderService:
         categories: Sequence[str] | None = None,
         limit: int | None = None,
         enrich_instagram: bool = True,
+        exclude_chains: bool = True,
         on_progress: ProgressCallback | None = None,
     ) -> list[Restaurant]:
         """Exécute le pipeline complet et retourne la liste des restaurants.
@@ -54,6 +58,7 @@ class RestaurantFinderService:
             categories: catégories OSM à inclure (défaut : configuration).
             limit: nombre maximal de restaurants à retourner.
             enrich_instagram: active la recherche du profil Instagram.
+            exclude_chains: exclut les grandes enseignes / franchises.
             on_progress: callback optionnel pour suivre l'avancement de
                 l'enrichissement (utilisé par la CLI pour la barre de progression).
         """
@@ -61,6 +66,15 @@ class RestaurantFinderService:
         categories = tuple(categories) if categories else self._settings.default_categories
 
         restaurants = self._source.find_restaurants(city, categories)
+
+        if exclude_chains:
+            restaurants, excluded = self._chain_filter.exclude_chains(restaurants)
+            if excluded:
+                logger.info(
+                    "%d enseigne(s)/franchise(s) exclue(s) — %d indépendant(s) restant(s).",
+                    excluded,
+                    len(restaurants),
+                )
 
         if limit is not None:
             restaurants = restaurants[:limit]

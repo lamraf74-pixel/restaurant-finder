@@ -29,6 +29,14 @@ class Restaurant(BaseModel):
     city: str = ""
     latitude: float | None = None
     longitude: float | None = None
+    brand: str | None = Field(
+        default=None,
+        description="Enseigne OSM (`brand`) si renseignée — utile pour détecter les chaînes.",
+    )
+    operator: str | None = Field(
+        default=None,
+        description="Opérateur OSM (`operator`) si renseigné.",
+    )
     instagram_url: str | None = None
 
     def to_export_row(self) -> dict[str, str]:

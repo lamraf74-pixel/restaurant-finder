@@ -15,14 +15,26 @@ from urllib3.util.retry import Retry
 from restaurant_finder.config import Settings
 
 
-def build_http_session(settings: Settings) -> requests.Session:
-    """Construit une `requests.Session` configurée pour l'application."""
+def build_http_session(settings: Settings, *, max_retries: int | None = None) -> requests.Session:
+    """Construit une `requests.Session` configurée pour l'application.
+
+    Args:
+        settings: configuration applicative.
+        max_retries: surcharge optionnelle du nombre de retries HTTP.
+            Passer `0` pour Overpass (le basculement de miroir doit être immédiat).
+    """
 
     session = requests.Session()
-    session.headers.update({"User-Agent": settings.user_agent})
+    session.headers.update(
+        {
+            "User-Agent": settings.user_agent,
+            "Accept": "application/json",
+        }
+    )
 
+    retries = settings.http_max_retries if max_retries is None else max_retries
     retry_strategy = Retry(
-        total=settings.http_max_retries,
+        total=retries,
         backoff_factor=settings.http_backoff_factor,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=("GET", "POST"),

@@ -89,7 +89,7 @@ src/restaurant_finder/
 | CLI | Typer + Rich | Typage fort, aide auto-générée, sorties lisibles (tableaux, barres de progression) |
 | Données restaurants | OpenStreetMap (Overpass API) | Gratuit, sans clé API, données ouvertes |
 | Géocodage | Nominatim | Service OSM officiel pour convertir un nom de ville en zone géographique |
-| Recherche Instagram | DuckDuckGo (scraping HTML) + rapidfuzz | Aucune API de recherche web gratuite n'existe ; approche heuristique isolée derrière une interface remplaçable |
+| Recherche Instagram | librairie `ddgs` + matching rapidfuzz | Gratuit, sans clé API ; bien plus fiable que le scraping HTML DuckDuckGo (souvent bloqué) |
 | Validation des données | Pydantic | Modèles typés et auto-validés, sérialisation simple |
 | Export | pandas + openpyxl | Un seul DataFrame, deux formats de sortie cohérents |
 | Configuration | pydantic-settings | Variables d'environnement / `.env` sans configuration manuelle |
@@ -129,9 +129,17 @@ restaurant-finder search "Nantes" --output output/nantes --format csv --format x
 # Recherche rapide, sans enrichissement Instagram
 restaurant-finder search "Marseille" --no-instagram
 
+# Uniquement les établissements avec un Instagram trouvé (cas d'usage principal)
+restaurant-finder search "Nice" --limit 50 --only-with-instagram --output output/nice_instagram
+
+# Inclure aussi les grandes enseignes (désactive le filtre franchises)
+restaurant-finder search "Nice" --include-chains --limit 20
+
 # Logs détaillés (debug)
 restaurant-finder search "Nice" --verbose
 ```
+
+Par défaut, les **grandes enseignes / franchises** (McDo, Subway, Burger King, Starbucks, etc.) sont **exclues** avant la recherche Instagram, pour ne garder que les indépendants.
 
 Équivalent sans installation du script : `python -m restaurant_finder search "Lyon"`.
 
@@ -150,13 +158,12 @@ préfixées par `RF_`, ou un fichier `.env` à la racine (voir
 
 ## Limites connues
 
-- **Recherche Instagram heuristique** : il n'existe pas d'API de
-  recherche web gratuite et officielle. Le `DuckDuckGoSearchProvider`
-  scrape la page HTML publique de DuckDuckGo ; c'est un point de
-  fragilité assumé (le HTML peut changer sans préavis) et volontairement
-  isolé derrière l'interface `SearchProvider`, remplaçable par un
-  fournisseur payant (SerpApi, Google Custom Search...) si besoin de
-  fiabilité accrue.
+- **Recherche Instagram heuristique** : il n'existe pas d'API Instagram
+  officielle gratuite pour retrouver un compte à partir d'un nom. Le
+  logiciel utilise la recherche web (`ddgs`) + un matching flou. Le
+  taux de trouvaille est bon mais pas parfait (homonymes, comptes
+  absents, mauvais matching possible). L'option `--only-with-instagram`
+  permet de n'exporter que les profils effectivement trouvés.
 - **Couverture des données** : dépend de la qualité du référencement
   OpenStreetMap sur la zone recherchée (certains établissements peuvent
   manquer ou avoir une adresse incomplète).

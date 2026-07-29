@@ -1,47 +1,26 @@
 """Recherche du profil Instagram officiel d'un restaurant.
 
-Stratégie (heuristique, assumée comme "best effort") :
-1. Construire une requête de recherche à partir du nom + de la ville.
-2. Interroger un `SearchProvider` (DuckDuckGo par défaut).
-3. Ne garder que les résultats pointant vers un profil `instagram.com`
-   (en excluant les pages génériques : posts, reels, explore...).
-4. Évaluer la similarité entre le nom du restaurant et chaque candidat
-   (titre de la page + identifiant du compte) via `matching.score_candidate`.
-5. Retenir le meilleur candidat si son score dépasse le seuil configuré.
+Priorité :
+1. Si OpenStreetMap fournit déjà un tag Instagram → on l'utilise tel quel.
+2. Sinon, recherche web (DuckDuckGo) avec plusieurs requêtes successives.
+3. Matching flou (rapidfuzz) pour retenir le profil le plus crédible.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
-from urllib.parse import urlparse
 
 from restaurant_finder.cache import FileCache
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import Restaurant
+from restaurant_finder.enrichment.instagram_normalize import extract_handle, to_profile_url
 from restaurant_finder.enrichment.matching import score_candidate
-from restaurant_finder.enrichment.search_providers.base import SearchProvider
+from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
 from restaurant_finder.exceptions import SearchProviderError
 
 logger = logging.getLogger(__name__)
-
-_INSTAGRAM_HOST_PATTERN = re.compile(r"(^|\.)instagram\.com$")
-_RESERVED_PATH_SEGMENTS = {
-    "p",
-    "reel",
-    "reels",
-    "explore",
-    "accounts",
-    "stories",
-    "directory",
-    "developer",
-    "about",
-    "legal",
-    "tv",
-}
-_HANDLE_PATTERN = re.compile(r"^/([A-Za-z0-9_.]+)/?")
 
 
 class InstagramFinder:
@@ -68,6 +47,10 @@ class InstagramFinder:
     def find(self, restaurant: Restaurant) -> str | None:
         """Retourne l'URL Instagram la plus probable, ou None si non trouvée."""
 
+        # Déjà fourni par OSM (contact:instagram) : pas besoin de chercher.
+        if restaurant.instagram_url:
+            return to_profile_url(restaurant.instagram_url) or restaurant.instagram_url
+
         cache_key = f"instagram:{restaurant.osm_id}:{restaurant.name}:{restaurant.city}"
         if self._cache is not None:
             cached = self._cache.get(cache_key)
@@ -82,31 +65,32 @@ class InstagramFinder:
         return result
 
     def _search_instagram(self, restaurant: Restaurant) -> str | None:
-        self._respect_rate_limit()
-
-        query = f'"{restaurant.name}" {restaurant.city} instagram'
-        try:
-            results = self._search_provider.search(
-                query, max_results=self._settings.instagram_max_search_results
-            )
-        except SearchProviderError as exc:
-            logger.warning("Recherche Instagram impossible pour %r : %s", restaurant.name, exc)
-            return None
-
         best_handle: str | None = None
         best_score = -1
 
-        for result in results:
-            handle = self._extract_handle(result.url)
-            if handle is None:
+        for query in self._build_queries(restaurant):
+            self._respect_rate_limit()
+            try:
+                results = self._search_provider.search(
+                    query, max_results=self._settings.instagram_max_search_results
+                )
+            except SearchProviderError as exc:
+                logger.warning(
+                    "Recherche Instagram impossible pour %r (%r) : %s",
+                    restaurant.name,
+                    query,
+                    exc,
+                )
                 continue
 
-            candidate_text = f"{result.title} {handle.replace('.', ' ').replace('_', ' ')}"
-            score = score_candidate(restaurant.name, candidate_text)
-
-            if score > best_score:
-                best_score = score
+            handle, score = self._best_candidate(restaurant, results)
+            if handle is not None and score > best_score:
                 best_handle = handle
+                best_score = score
+
+            # Dès qu'un profil dépasse le seuil, on arrête (objectif = Instagram).
+            if best_handle is not None and best_score >= self._settings.instagram_match_threshold:
+                break
 
         if best_handle is None or best_score < self._settings.instagram_match_threshold:
             logger.debug(
@@ -116,13 +100,54 @@ class InstagramFinder:
             )
             return None
 
-        logger.debug(
-            "Profil Instagram trouvé pour %r : @%s (score %d).",
+        logger.info(
+            "Instagram trouvé pour %r : @%s (score %d).",
             restaurant.name,
             best_handle,
             best_score,
         )
-        return f"https://www.instagram.com/{best_handle}/"
+        return to_profile_url(best_handle)
+
+    @staticmethod
+    def _build_queries(restaurant: Restaurant) -> list[str]:
+        """Plusieurs formulations pour maximiser le taux de trouvaille Instagram."""
+
+        name = restaurant.name.strip()
+        city = restaurant.city.strip()
+        return [
+            # La plus efficace pour remonter des profils Instagram.
+            f'site:instagram.com "{name}" {city}',
+            f'"{name}" {city} Instagram',
+            f"{name} {city} restaurant Instagram",
+        ]
+
+    def _best_candidate(
+        self, restaurant: Restaurant, results: list[SearchResult]
+    ) -> tuple[str | None, int]:
+        best_handle: str | None = None
+        best_score = -1
+
+        for result in results:
+            handle = extract_handle(result.url)
+            if handle is None:
+                continue
+
+            candidate_text = (
+                f"{result.title} {result.snippet} "
+                f"{handle.replace('.', ' ').replace('_', ' ')}"
+            )
+            score = score_candidate(restaurant.name, candidate_text)
+
+            # Bonus si le handle contient le nom de la ville (ex: lesafari_nice).
+            city_token = restaurant.city.strip().lower().replace(" ", "")
+            if city_token and city_token in handle.lower().replace("_", "").replace(".", ""):
+                score = min(100, score + 8)
+
+            if score > best_score:
+                best_score = score
+                best_handle = handle
+
+        return best_handle, best_score
 
     def _respect_rate_limit(self) -> None:
         """Espace les départs de requêtes d'au moins `instagram_search_delay_seconds`."""
@@ -133,21 +158,3 @@ class InstagramFinder:
             if wait_time > 0:
                 time.sleep(wait_time)
             self._last_request_time = time.monotonic()
-
-    @staticmethod
-    def _extract_handle(url: str) -> str | None:
-        """Extrait un identifiant de compte Instagram depuis une URL, si valide."""
-
-        parsed = urlparse(url)
-        if not _INSTAGRAM_HOST_PATTERN.search(parsed.netloc):
-            return None
-
-        match = _HANDLE_PATTERN.match(parsed.path)
-        if not match:
-            return None
-
-        handle = match.group(1)
-        if handle.lower() in _RESERVED_PATH_SEGMENTS:
-            return None
-
-        return handle

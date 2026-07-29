@@ -84,6 +84,19 @@ def search(
         "--no-instagram",
         help="Désactive la recherche du profil Instagram (plus rapide).",
     ),
+    only_with_instagram: bool = typer.Option(
+        False,
+        "--only-with-instagram",
+        help="N'exporte que les établissements pour lesquels un Instagram a été trouvé.",
+    ),
+    include_chains: bool = typer.Option(
+        False,
+        "--include-chains",
+        help=(
+            "Inclut les grandes enseignes / franchises (McDo, Subway, Burger King...). "
+            "Par défaut elles sont exclues."
+        ),
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Active les logs détaillés (debug)."
     ),
@@ -92,6 +105,13 @@ def search(
 
     setup_logging(verbose=verbose)
 
+    if no_instagram and only_with_instagram:
+        console.print(
+            "[bold red]Options incompatibles :[/bold red] "
+            "--no-instagram et --only-with-instagram ne peuvent pas être utilisés ensemble."
+        )
+        raise typer.Exit(code=1)
+
     _validate_choices("catégorie", categories, allowed=set(DEFAULT_CATEGORY_LABELS))
     _validate_choices("format", formats, allowed=set(EXPORTERS))
 
@@ -99,6 +119,8 @@ def search(
     service = build_service(settings, enable_instagram=not no_instagram)
 
     console.print(f"[bold]Recherche des établissements à[/bold] [cyan]{city}[/cyan]...")
+    if not include_chains:
+        console.print("[dim]Filtre actif : enseignes / franchises exclues.[/dim]")
 
     try:
         with console.status("Interrogation d'OpenStreetMap (Overpass)..."):
@@ -107,6 +129,7 @@ def search(
                 categories=categories or None,
                 limit=limit,
                 enrich_instagram=False,
+                exclude_chains=not include_chains,
             )
     except RestaurantFinderError as exc:
         console.print(f"[bold red]Erreur :[/bold red] {exc}")
@@ -116,10 +139,29 @@ def search(
         console.print("[yellow]Aucun établissement trouvé pour cette recherche.[/yellow]")
         raise typer.Exit(code=0)
 
-    console.print(f"[green]{len(restaurants)} établissement(s) trouvé(s).[/green]")
+    console.print(
+        f"[green]{len(restaurants)} établissement(s) indépendant(s) retenu(s).[/green]"
+        if not include_chains
+        else f"[green]{len(restaurants)} établissement(s) trouvé(s).[/green]"
+    )
 
     if not no_instagram:
         restaurants = _enrich_with_progress(service, restaurants)
+        with_instagram = sum(1 for item in restaurants if item.instagram_url)
+        console.print(
+            f"[magenta]{with_instagram}/{len(restaurants)} profil(s) Instagram trouvé(s).[/magenta]"
+        )
+
+        if only_with_instagram:
+            restaurants = [item for item in restaurants if item.instagram_url]
+            if not restaurants:
+                console.print(
+                    "[yellow]Aucun profil Instagram trouvé : rien à exporter.[/yellow]"
+                )
+                raise typer.Exit(code=0)
+            console.print(
+                f"[green]Export filtré : {len(restaurants)} établissement(s) avec Instagram.[/green]"
+            )
 
     _print_summary_table(restaurants)
 
