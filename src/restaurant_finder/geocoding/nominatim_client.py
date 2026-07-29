@@ -1,0 +1,87 @@
+"""Client de géocodage basé sur Nominatim (OpenStreetMap).
+
+Rôle unique : transformer un nom de ville en zone géographique (bbox)
+exploitable par la source Overpass. Isolé dans sa propre classe pour
+pouvoir, demain, être remplacé par un autre fournisseur de géocodage
+sans impacter le reste de l'application.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+
+import requests
+
+from restaurant_finder.cache import FileCache
+from restaurant_finder.config import Settings
+from restaurant_finder.domain.models import BoundingBox
+from restaurant_finder.exceptions import GeocodingError
+
+logger = logging.getLogger(__name__)
+
+
+class NominatimGeocoder:
+    """Géocode un nom de ville en `BoundingBox` via l'API Nominatim."""
+
+    def __init__(
+        self,
+        session: requests.Session,
+        settings: Settings,
+        cache: FileCache | None = None,
+    ) -> None:
+        self._session = session
+        self._settings = settings
+        self._cache = cache
+        self._last_request_time: float = 0.0
+
+    def _respect_rate_limit(self) -> None:
+        """Nominatim impose un maximum de 1 requête/seconde."""
+
+        elapsed = time.monotonic() - self._last_request_time
+        wait_time = self._settings.nominatim_rate_limit_seconds - elapsed
+        if wait_time > 0:
+            time.sleep(wait_time)
+
+    def geocode_city(self, city: str) -> BoundingBox:
+        """Retourne la zone géographique correspondant à `city`.
+
+        Raises:
+            GeocodingError: si la ville est introuvable ou en cas d'erreur réseau.
+        """
+
+        cache_key = f"geocode:{city.strip().lower()}"
+        if self._cache is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                logger.debug("Bounding box pour %r trouvée en cache.", city)
+                return BoundingBox(**cached)
+
+        self._respect_rate_limit()
+        self._last_request_time = time.monotonic()
+
+        try:
+            response = self._session.get(
+                f"{self._settings.nominatim_base_url}/search",
+                params={"city": city, "format": "jsonv2", "limit": "1"},
+                timeout=self._settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+            results = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise GeocodingError(f"Échec du géocodage de la ville '{city}': {exc}") from exc
+
+        if not results:
+            raise GeocodingError(f"Ville introuvable : '{city}'.")
+
+        raw_bbox = results[0].get("boundingbox")
+        if not raw_bbox or len(raw_bbox) != 4:
+            raise GeocodingError(f"Réponse Nominatim invalide pour '{city}'.")
+
+        south, north, west, east = (float(value) for value in raw_bbox)
+        bbox = BoundingBox(south=south, north=north, west=west, east=east)
+
+        if self._cache is not None:
+            self._cache.set(cache_key, bbox.model_dump())
+
+        return bbox
