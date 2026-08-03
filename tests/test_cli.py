@@ -35,3 +35,17 @@ def test_search_rejects_unknown_format() -> None:
 
     assert result.exit_code == 1
     assert "pdf" in result.output
+
+
+def test_search_requires_city_or_near() -> None:
+    result = runner.invoke(app, ["search"])
+
+    assert result.exit_code == 1
+    assert "--near" in result.output
+
+
+def test_search_rejects_invalid_near_coordinates() -> None:
+    result = runner.invoke(app, ["search", "--near", "pas-des-coordonnees"])
+
+    assert result.exit_code == 1
+    assert "invalide" in result.output.lower()

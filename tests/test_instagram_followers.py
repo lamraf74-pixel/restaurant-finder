@@ -1,0 +1,161 @@
+"""Tests du client de followers Instagram et du filtre associé."""
+
+from __future__ import annotations
+
+import requests
+import responses
+
+from restaurant_finder.config import Settings
+from restaurant_finder.domain.models import Restaurant
+from restaurant_finder.enrichment.instagram_finder import InstagramFinder
+from restaurant_finder.enrichment.instagram_followers import InstagramFollowerClient
+from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
+from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
+from restaurant_finder.sources.base import RestaurantSource
+
+
+class _StubSource(RestaurantSource):
+    def find_restaurants(self, city: str, categories):  # type: ignore[no-untyped-def]
+        return []
+
+    def find_restaurants_near_points(self, points, categories):  # type: ignore[no-untyped-def]
+        return []
+
+
+class _StubSearchProvider(SearchProvider):
+    def __init__(self, results: list[SearchResult]) -> None:
+        self._results = results
+
+    def search(self, query: str, max_results: int) -> list[SearchResult]:
+        return self._results[:max_results]
+
+
+class _StubFollowerClient:
+    def __init__(self, counts: dict[str, int | None]) -> None:
+        self._counts = counts
+
+    def get_follower_count(self, instagram_url_or_handle: str) -> int | None:
+        handle = instagram_url_or_handle.rstrip("/").split("/")[-1]
+        return self._counts.get(handle)
+
+
+@responses.activate
+def test_follower_client_parses_follower_count_from_profile_html() -> None:
+    settings = Settings(instagram_followers_delay_seconds=0)
+    responses.add(responses.GET, "https://www.instagram.com/", body="ok", status=200)
+    responses.add(
+        responses.GET,
+        "https://www.instagram.com/petitbistrot/",
+        body='{"follower_count":420,"username":"petitbistrot"}',
+        status=200,
+    )
+
+    client = InstagramFollowerClient(settings=settings, session=requests.Session())
+    assert client.get_follower_count("https://www.instagram.com/petitbistrot/") == 420
+
+
+def test_service_excludes_instagram_with_too_many_followers() -> None:
+    settings = Settings(
+        instagram_search_delay_seconds=0,
+        instagram_max_followers=1000,
+        instagram_filter_by_followers=True,
+        instagram_exclude_unknown_followers=True,
+    )
+    restaurant = Restaurant(
+        osm_id="node/1",
+        name="Le Petit Bistrot",
+        category="Restaurant",
+        city="Lyon",
+    )
+    finder = InstagramFinder(
+        _StubSearchProvider(
+            [
+                SearchResult(
+                    title="Le Petit Bistrot",
+                    url="https://www.instagram.com/lepetitbistrot/",
+                )
+            ]
+        ),
+        settings,
+    )
+    service = RestaurantFinderService(
+        source=_StubSource(),
+        settings=settings,
+        instagram_finder=finder,
+        follower_client=_StubFollowerClient({"lepetitbistrot": 2500}),  # type: ignore[arg-type]
+    )
+
+    enriched = service.enrich_with_instagram([restaurant])
+    assert enriched[0].instagram_url is None
+    assert enriched[0].instagram_followers == 2500
+
+
+def test_service_keeps_instagram_below_follower_threshold() -> None:
+    settings = Settings(
+        instagram_search_delay_seconds=0,
+        instagram_max_followers=1000,
+        instagram_filter_by_followers=True,
+        instagram_exclude_unknown_followers=True,
+    )
+    restaurant = Restaurant(
+        osm_id="node/1",
+        name="Le Petit Bistrot",
+        category="Restaurant",
+        city="Lyon",
+    )
+    finder = InstagramFinder(
+        _StubSearchProvider(
+            [
+                SearchResult(
+                    title="Le Petit Bistrot",
+                    url="https://www.instagram.com/lepetitbistrot/",
+                )
+            ]
+        ),
+        settings,
+    )
+    service = RestaurantFinderService(
+        source=_StubSource(),
+        settings=settings,
+        instagram_finder=finder,
+        follower_client=_StubFollowerClient({"lepetitbistrot": 420}),  # type: ignore[arg-type]
+    )
+
+    enriched = service.enrich_with_instagram([restaurant])
+    assert enriched[0].instagram_url == "https://www.instagram.com/lepetitbistrot/"
+    assert enriched[0].instagram_followers == 420
+
+
+def test_service_excludes_unknown_followers_by_default() -> None:
+    settings = Settings(
+        instagram_search_delay_seconds=0,
+        instagram_max_followers=1000,
+        instagram_filter_by_followers=True,
+        instagram_exclude_unknown_followers=True,
+    )
+    restaurant = Restaurant(
+        osm_id="node/1",
+        name="Le Petit Bistrot",
+        category="Restaurant",
+        city="Lyon",
+    )
+    finder = InstagramFinder(
+        _StubSearchProvider(
+            [
+                SearchResult(
+                    title="Le Petit Bistrot",
+                    url="https://www.instagram.com/lepetitbistrot/",
+                )
+            ]
+        ),
+        settings,
+    )
+    service = RestaurantFinderService(
+        source=_StubSource(),
+        settings=settings,
+        instagram_finder=finder,
+        follower_client=_StubFollowerClient({"lepetitbistrot": None}),  # type: ignore[arg-type]
+    )
+
+    enriched = service.enrich_with_instagram([restaurant])
+    assert enriched[0].instagram_url is None

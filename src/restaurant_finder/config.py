@@ -55,10 +55,13 @@ class Settings(BaseSettings):
     overpass_timeout_seconds: int = 60
     overpass_connect_timeout_seconds: float = 10.0
     overpass_busy_retry_seconds: float = 8.0
-    overpass_rate_limit_seconds: float = 1.0
+    # Pause entre deux requêtes Overpass successives (recherche multi-points).
+    overpass_rate_limit_seconds: float = 3.0
     # Par défaut : restaurants & cafés (les indépendants / bistrots ciblés).
     # Les bars / pubs / fast-food restent disponibles via --category.
     default_categories: tuple[str, ...] = ("restaurant", "cafe")
+    # Rayon par défaut (mètres) autour de chaque point "pingué" (--near).
+    default_search_radius_meters: float = 800.0
 
     # --- Enrichissement Instagram ---
     # workers=1 : les backends de recherche publics supportent mal le parallèle.
@@ -67,6 +70,12 @@ class Settings(BaseSettings):
     instagram_search_delay_seconds: float = 1.0
     instagram_match_threshold: int = 55  # score rapidfuzz (0-100)
     instagram_max_search_results: int = 10
+    # Ne garder que les comptes avec strictement moins de N followers.
+    instagram_max_followers: int = 1000
+    instagram_filter_by_followers: bool = True
+    # Si le nombre de followers est illisible (blocage IG), exclure le compte.
+    instagram_exclude_unknown_followers: bool = True
+    instagram_followers_delay_seconds: float = 1.5
 
     # --- Cache ---
     cache_enabled: bool = True

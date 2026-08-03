@@ -70,3 +70,28 @@ def test_geocode_city_uses_cache_and_avoids_second_request() -> None:
     geocoder.geocode_city("Lyon")
 
     assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_reverse_geocode_city_returns_locality_name() -> None:
+    settings = Settings(nominatim_rate_limit_seconds=0)
+    responses.add(
+        responses.GET,
+        f"{settings.nominatim_base_url}/reverse",
+        json={"address": {"city": "Nice", "country": "France"}},
+        status=200,
+    )
+
+    geocoder = NominatimGeocoder(session=requests.Session(), settings=settings)
+    assert geocoder.reverse_geocode_city(43.7, 7.25) == "Nice"
+
+
+@responses.activate
+def test_reverse_geocode_city_returns_none_when_unavailable() -> None:
+    settings = Settings(nominatim_rate_limit_seconds=0)
+    responses.add(
+        responses.GET, f"{settings.nominatim_base_url}/reverse", status=500
+    )
+
+    geocoder = NominatimGeocoder(session=requests.Session(), settings=settings)
+    assert geocoder.reverse_geocode_city(43.7, 7.25) is None

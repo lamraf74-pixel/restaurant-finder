@@ -35,7 +35,7 @@ def test_csv_exporter_writes_expected_columns_and_adds_extension(
     dataframe = pd.read_csv(exported_path)
     assert list(dataframe.columns) == _EXPECTED_COLUMNS
     assert dataframe.iloc[0]["Nom"] == sample_restaurant.name
-    assert dataframe.iloc[1]["Instagram"] == "https://www.instagram.com/cafeducoin/"
+    assert dataframe.iloc[1]["Instagram"] == "cafeducoin"
 
 
 def test_excel_exporter_writes_expected_columns_and_adds_extension(

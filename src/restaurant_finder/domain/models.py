@@ -38,17 +38,31 @@ class Restaurant(BaseModel):
         description="Opérateur OSM (`operator`) si renseigné.",
     )
     instagram_url: str | None = None
+    instagram_followers: int | None = Field(
+        default=None,
+        description="Nombre de followers Instagram, si disponible.",
+    )
+
+    @property
+    def instagram_handle(self) -> str | None:
+        """Retourne uniquement le nom du compte Instagram (sans URL)."""
+
+        # Import local pour éviter une dépendance circulaire domain ↔ enrichment.
+        from restaurant_finder.enrichment.instagram_normalize import extract_handle
+
+        return extract_handle(self.instagram_url)
 
     def to_export_row(self) -> dict[str, str]:
         """Convertit le restaurant en ligne prête pour l'export (CSV/Excel).
 
         Les noms de colonnes correspondent exactement au format de sortie
         attendu : Nom, Instagram, Adresse, Ville, Catégorie.
+        La colonne Instagram contient le handle (ex: bistrot_le_cerey), pas l'URL.
         """
 
         return {
             "Nom": self.name,
-            "Instagram": self.instagram_url or "",
+            "Instagram": self.instagram_handle or "",
             "Adresse": self.address,
             "Ville": self.city,
             "Catégorie": self.category,

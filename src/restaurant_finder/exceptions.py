@@ -16,6 +16,10 @@ class GeocodingError(RestaurantFinderError):
     """Levée quand une ville ne peut pas être géolocalisée."""
 
 
+class LocationParsingError(RestaurantFinderError):
+    """Levée quand un texte (coordonnées / lien Google Maps) est illisible."""
+
+
 class RestaurantSourceError(RestaurantFinderError):
     """Levée quand une source de données de restaurants échoue."""
 

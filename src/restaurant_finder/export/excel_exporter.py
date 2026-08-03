@@ -10,7 +10,7 @@ from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.exceptions import ExportError
 from restaurant_finder.export.base import Exporter
 
-_COLUMN_WIDTHS = {"Nom": 32, "Instagram": 38, "Adresse": 34, "Ville": 18, "Catégorie": 16}
+_COLUMN_WIDTHS = {"Nom": 32, "Instagram": 24, "Adresse": 34, "Ville": 18, "Catégorie": 16}
 
 
 class ExcelExporter(Exporter):

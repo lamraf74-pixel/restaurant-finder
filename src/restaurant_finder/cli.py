@@ -16,11 +16,12 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Table
 
 from restaurant_finder import __version__
-from restaurant_finder.bootstrap import build_service
+from restaurant_finder.bootstrap import build_location_parser, build_service
 from restaurant_finder.config import DEFAULT_CATEGORY_LABELS, get_settings
 from restaurant_finder.domain.models import Restaurant
-from restaurant_finder.exceptions import RestaurantFinderError
+from restaurant_finder.exceptions import LocationParsingError, RestaurantFinderError
 from restaurant_finder.export import EXPORTERS
+from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
 from restaurant_finder.utils.logging import setup_logging
 
@@ -54,7 +55,27 @@ def main(
 
 @app.command()
 def search(
-    city: str = typer.Argument(..., help="Ville à rechercher, ex : 'Lyon'."),
+    city: str | None = typer.Argument(
+        None,
+        help="Ville à rechercher, ex : 'Lyon'. Optionnel si --near est utilisé.",
+    ),
+    near: list[str] = typer.Option(
+        [],
+        "--near",
+        "-n",
+        help=(
+            "Lieu \"pingué\" sur Google Maps : coordonnées collées ('45.9177, 6.1319') "
+            "ou lien Google Maps complet. Option répétable pour étendre la recherche "
+            "à plusieurs lieux (les résultats sont fusionnés)."
+        ),
+    ),
+    radius: float = typer.Option(
+        800.0,
+        "--radius",
+        "-r",
+        min=10,
+        help="Rayon de recherche en mètres autour de chaque --near (défaut : 800m).",
+    ),
     categories: list[str] = typer.Option(
         [],
         "--category",
@@ -97,6 +118,20 @@ def search(
             "Par défaut elles sont exclues."
         ),
     ),
+    max_followers: int = typer.Option(
+        1000,
+        "--max-followers",
+        min=1,
+        help="Exclut les comptes Instagram avec au moins ce nombre de followers (défaut : 1000).",
+    ),
+    keep_unknown_followers: bool = typer.Option(
+        False,
+        "--keep-unknown-followers",
+        help=(
+            "Garde un Instagram même si le nombre de followers n'a pas pu être lu. "
+            "Par défaut ces comptes sont exclus."
+        ),
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Active les logs détaillés (debug)."
     ),
@@ -112,20 +147,53 @@ def search(
         )
         raise typer.Exit(code=1)
 
+    if not city and not near:
+        console.print(
+            "[bold red]Précise une ville[/bold red] (ex: 'Lyon') "
+            "[bold red]ou au moins un lieu[/bold red] avec --near."
+        )
+        raise typer.Exit(code=1)
+
     _validate_choices("catégorie", categories, allowed=set(DEFAULT_CATEGORY_LABELS))
     _validate_choices("format", formats, allowed=set(EXPORTERS))
 
     settings = get_settings()
+    settings.instagram_max_followers = max_followers
+    settings.instagram_exclude_unknown_followers = not keep_unknown_followers
+
+    near_points: list[PointQuery] = []
+    if near:
+        location_parser = build_location_parser(settings)
+        for raw_location in near:
+            try:
+                latitude, longitude = location_parser.parse(raw_location)
+            except LocationParsingError as exc:
+                console.print(f"[bold red]Lieu invalide ({raw_location!r}) :[/bold red] {exc}")
+                raise typer.Exit(code=1) from None
+            near_points.append(PointQuery(latitude, longitude, radius))
+
     service = build_service(settings, enable_instagram=not no_instagram)
 
-    console.print(f"[bold]Recherche des établissements à[/bold] [cyan]{city}[/cyan]...")
+    if city:
+        console.print(f"[bold]Recherche des établissements à[/bold] [cyan]{city}[/cyan]...")
+    if near_points:
+        points_label = ", ".join(f"({p.latitude:.5f}, {p.longitude:.5f})" for p in near_points)
+        console.print(
+            f"[bold]Recherche autour de[/bold] [cyan]{points_label}[/cyan] "
+            f"[bold](rayon {radius:.0f}m)[/bold]..."
+        )
     if not include_chains:
         console.print("[dim]Filtre actif : enseignes / franchises exclues.[/dim]")
+    if not no_instagram:
+        console.print(
+            f"[dim]Filtre Instagram : moins de {max_followers} followers.[/dim]"
+        )
 
     try:
         with console.status("Interrogation d'OpenStreetMap (Overpass)..."):
             restaurants = service.find_restaurants(
-                city=city,
+                cities=[city] if city else None,
+                near_points=near_points or None,
                 categories=categories or None,
                 limit=limit,
                 enrich_instagram=False,
@@ -206,6 +274,41 @@ def _enrich_with_progress(
     return restaurants
 
 
+@app.command()
+def ui(
+    host: str = typer.Option("127.0.0.1", "--host", help="Adresse d'écoute du serveur local."),
+    port: int = typer.Option(8765, "--port", "-p", help="Port du serveur local."),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="N'ouvre pas automatiquement le navigateur."
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Active les logs détaillés (debug)."
+    ),
+) -> None:
+    """Lance le panel web : carte interactive pour lancer des recherches sans commande."""
+
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from restaurant_finder.webapp.server import create_app
+
+    setup_logging(verbose=verbose)
+
+    settings = get_settings()
+    web_app = create_app(settings)
+
+    url = f"http://{host}:{port}"
+    console.print(f"[bold green]Panel disponible sur[/bold green] [cyan]{url}[/cyan]")
+    console.print("[dim]Ctrl+C pour arrêter le serveur.[/dim]")
+
+    if not no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(web_app, host=host, port=port, log_level="warning" if not verbose else "info")
+
+
 def _print_summary_table(restaurants: list[Restaurant]) -> None:
     table = Table(title="Aperçu des résultats", show_lines=False)
     table.add_column("Nom", style="bold")
@@ -219,7 +322,7 @@ def _print_summary_table(restaurants: list[Restaurant]) -> None:
             restaurant.name,
             restaurant.category,
             restaurant.city,
-            restaurant.instagram_url or "—",
+            restaurant.instagram_handle or "—",
         )
 
     console.print(table)

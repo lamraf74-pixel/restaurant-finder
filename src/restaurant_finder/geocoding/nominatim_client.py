@@ -85,3 +85,53 @@ class NominatimGeocoder:
             self._cache.set(cache_key, bbox.model_dump())
 
         return bbox
+
+    def reverse_geocode_city(self, latitude: float, longitude: float) -> str | None:
+        """Retourne un nom de localité (ville/village) proche du point donné.
+
+        Utilisé pour étiqueter la colonne "Ville" des recherches par point GPS
+        (`--near`), où il n'y a pas de nom de ville fourni explicitement.
+        Best-effort : retourne None si Nominatim échoue ou ne trouve rien.
+        """
+
+        cache_key = f"reverse:{round(latitude, 5)}:{round(longitude, 5)}"
+        if self._cache is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached or None
+
+        self._respect_rate_limit()
+        self._last_request_time = time.monotonic()
+
+        try:
+            response = self._session.get(
+                f"{self._settings.nominatim_base_url}/reverse",
+                params={
+                    "lat": f"{latitude:.6f}",
+                    "lon": f"{longitude:.6f}",
+                    "format": "jsonv2",
+                    "zoom": "14",
+                },
+                timeout=self._settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.debug("Reverse géocodage échoué pour (%s, %s) : %s", latitude, longitude, exc)
+            if self._cache is not None:
+                self._cache.set(cache_key, "")
+            return None
+
+        address = payload.get("address", {})
+        label = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or address.get("suburb")
+        )
+
+        if self._cache is not None:
+            self._cache.set(cache_key, label or "")
+
+        return label

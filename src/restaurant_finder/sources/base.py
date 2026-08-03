@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
 from restaurant_finder.domain.models import Restaurant
+from restaurant_finder.geocoding.geo_math import PointQuery
 
 
 class RestaurantSource(ABC):
@@ -22,6 +23,22 @@ class RestaurantSource(ABC):
 
         Args:
             city: nom de la ville à rechercher.
+            categories: liste de catégories OSM (ex: "restaurant", "cafe").
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def find_restaurants_near_points(
+        self,
+        points: Sequence[PointQuery],
+        categories: Sequence[str],
+    ) -> list[Restaurant]:
+        """Retourne les restaurants situés dans le rayon de chaque point.
+
+        Args:
+            points: lieux "pingués" (latitude, longitude, rayon en mètres).
+                Plusieurs points étendent la zone de recherche à plusieurs
+                endroits distincts, chacun avec son propre rayon.
             categories: liste de catégories OSM (ex: "restaurant", "cafe").
         """
         raise NotImplementedError

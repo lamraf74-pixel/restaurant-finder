@@ -10,11 +10,19 @@ from __future__ import annotations
 from restaurant_finder.cache import FileCache
 from restaurant_finder.config import Settings
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
+from restaurant_finder.enrichment.instagram_followers import InstagramFollowerClient
 from restaurant_finder.enrichment.search_providers.ddgs_provider import DdgsSearchProvider
+from restaurant_finder.geocoding.location_parser import LocationInputParser
 from restaurant_finder.geocoding.nominatim_client import NominatimGeocoder
 from restaurant_finder.http.client import build_http_session
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
 from restaurant_finder.sources.overpass_source import OverpassRestaurantSource
+
+
+def build_location_parser(settings: Settings) -> LocationInputParser:
+    """Construit un `LocationInputParser` (coordonnées / liens Google Maps)."""
+
+    return LocationInputParser(session=build_http_session(settings), settings=settings)
 
 
 def build_service(settings: Settings, enable_instagram: bool = True) -> RestaurantFinderService:
@@ -35,13 +43,19 @@ def build_service(settings: Settings, enable_instagram: bool = True) -> Restaura
     )
 
     instagram_finder: InstagramFinder | None = None
+    follower_client: InstagramFollowerClient | None = None
     if enable_instagram and settings.instagram_search_enabled:
         # ddgs (sans clé API) : plus fiable que le scraping HTML DuckDuckGo.
         search_provider = DdgsSearchProvider(settings=settings)
         instagram_finder = InstagramFinder(
             search_provider=search_provider, settings=settings, cache=cache
         )
+        if settings.instagram_filter_by_followers:
+            follower_client = InstagramFollowerClient(settings=settings, cache=cache)
 
     return RestaurantFinderService(
-        source=source, settings=settings, instagram_finder=instagram_finder
+        source=source,
+        settings=settings,
+        instagram_finder=instagram_finder,
+        follower_client=follower_client,
     )

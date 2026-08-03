@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Restaurant Finder</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <header class="sidebar__header">
+        <h1>🍽️ Restaurant Finder</h1>
+        <p>Clique sur la carte pour ajouter un lieu, ou saisis une ville. Combine autant que tu veux.</p>
+      </header>
+
+      <section class="card">
+        <h2>Villes</h2>
+        <div class="input-row">
+          <input id="city-input" type="text" placeholder="Ex : Lyon" />
+          <button id="add-city-btn" class="btn btn--secondary">Ajouter</button>
+        </div>
+        <ul id="city-list" class="chip-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Lieux sur la carte</h2>
+        <p class="hint">Clique n'importe où sur la carte pour ajouter un point de recherche.</p>
+        <div class="input-row">
+          <label for="default-radius">Rayon par défaut</label>
+          <input id="default-radius" type="number" min="50" step="50" value="800" />
+          <span class="unit">m</span>
+        </div>
+        <ul id="point-list" class="point-list"></ul>
+      </section>
+
+      <section class="card card--collapsible">
+        <button id="toggle-options" class="card__toggle" type="button">
+          <span>Options avancées</span>
+          <span id="toggle-icon">▸</span>
+        </button>
+        <div id="options-body" class="card__body collapsed">
+          <div class="field">
+            <span class="field__label">Catégories</span>
+            <div id="category-checkboxes" class="checkbox-grid"></div>
+          </div>
+
+          <div class="field">
+            <label for="limit-input">Nombre maximal de résultats</label>
+            <input id="limit-input" type="number" min="1" placeholder="Illimité" />
+          </div>
+
+          <div class="field">
+            <span class="field__label">Formats d'export</span>
+            <div class="checkbox-row">
+              <label><input type="checkbox" id="format-csv" checked /> CSV</label>
+              <label><input type="checkbox" id="format-xlsx" checked /> Excel</label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="switch">
+              <input type="checkbox" id="toggle-instagram" checked />
+              <span>Rechercher les profils Instagram</span>
+            </label>
+          </div>
+
+          <div id="instagram-options">
+            <div class="field">
+              <label class="switch">
+                <input type="checkbox" id="only-with-instagram" />
+                <span>N'exporter que les établissements avec Instagram</span>
+              </label>
+            </div>
+            <div class="field">
+              <label for="max-followers-input">Followers Instagram maximum</label>
+              <input id="max-followers-input" type="number" min="1" value="1000" />
+            </div>
+            <div class="field">
+              <label class="switch">
+                <input type="checkbox" id="keep-unknown-followers" />
+                <span>Garder les comptes dont les followers sont illisibles</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="switch">
+              <input type="checkbox" id="include-chains" />
+              <span>Inclure les grandes enseignes / franchises</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <button id="search-btn" class="btn btn--primary btn--block">Rechercher</button>
+      <button id="reset-btn" class="btn btn--ghost btn--block">Tout effacer</button>
+
+      <section id="status-card" class="card status-card hidden">
+        <div class="status-card__header">
+          <div class="spinner"></div>
+          <span id="status-message">En cours...</span>
+        </div>
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-bar__fill"></div>
+        </div>
+      </section>
+
+      <section id="error-card" class="card error-card hidden">
+        <strong>Erreur</strong>
+        <p id="error-message"></p>
+      </section>
+    </aside>
+
+    <main class="map-pane">
+      <div id="map"></div>
+      <section id="results-panel" class="results-panel hidden">
+        <div class="results-panel__header">
+          <h2 id="results-title">Résultats</h2>
+          <div id="download-buttons" class="download-buttons"></div>
+          <button id="close-results" class="btn btn--ghost btn--small">Fermer</button>
+        </div>
+        <div class="results-panel__body">
+          <table id="results-table">
+            <thead>
+              <tr>
+                <th>Nom</th>
+                <th>Instagram</th>
+                <th>Followers</th>
+                <th>Ville</th>
+                <th>Catégorie</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

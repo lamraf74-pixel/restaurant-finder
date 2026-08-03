@@ -1,7 +1,10 @@
 """Source de restaurants basée sur l'API Overpass (données OpenStreetMap).
 
-Pipeline : nom de ville -> bounding box (Nominatim) -> requête Overpass QL
-sur cette zone -> parsing des éléments OSM en objets `Restaurant`.
+Deux modes de recherche :
+1. Par ville : nom de ville -> bounding box (Nominatim) -> requête Overpass.
+2. Par point GPS ("pin" Google Maps) : point + rayon -> bounding box ->
+   requête Overpass -> filtrage précis par distance à vol d'oiseau.
+   Plusieurs points peuvent être combinés pour étendre la recherche.
 """
 
 from __future__ import annotations
@@ -17,6 +20,11 @@ from restaurant_finder.config import DEFAULT_CATEGORY_LABELS, Settings
 from restaurant_finder.domain.models import BoundingBox, Restaurant
 from restaurant_finder.enrichment.instagram_normalize import to_profile_url
 from restaurant_finder.exceptions import RestaurantSourceError
+from restaurant_finder.geocoding.geo_math import (
+    PointQuery,
+    bbox_from_point,
+    haversine_distance_meters,
+)
 from restaurant_finder.geocoding.nominatim_client import NominatimGeocoder
 from restaurant_finder.sources.base import RestaurantSource
 from restaurant_finder.utils.text import join_non_empty
@@ -38,7 +46,7 @@ _VALID_OSM_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
 
 class OverpassRestaurantSource(RestaurantSource):
-    """Récupère les restaurants d'une ville via Overpass (OpenStreetMap)."""
+    """Récupère les restaurants d'une zone via Overpass (OpenStreetMap)."""
 
     def __init__(
         self,
@@ -52,12 +60,64 @@ class OverpassRestaurantSource(RestaurantSource):
 
     def find_restaurants(self, city: str, categories: Sequence[str]) -> list[Restaurant]:
         bbox = self._geocoder.geocode_city(city)
+        restaurants = self._search_bbox(bbox, categories, fallback_city=city)
+        logger.info("%d établissement(s) trouvé(s) à %s.", len(restaurants), city)
+        return restaurants
+
+    def find_restaurants_near_points(
+        self,
+        points: Sequence[PointQuery],
+        categories: Sequence[str],
+    ) -> list[Restaurant]:
+        restaurants: list[Restaurant] = []
+        seen_osm_ids: set[str] = set()
+
+        for index, point in enumerate(points, start=1):
+            bbox = bbox_from_point(point.latitude, point.longitude, point.radius_meters)
+            label = (
+                self._geocoder.reverse_geocode_city(point.latitude, point.longitude)
+                or f"Lieu {index}"
+            )
+
+            found_here = 0
+            for restaurant in self._search_bbox(bbox, categories, fallback_city=label):
+                if restaurant.osm_id in seen_osm_ids:
+                    continue
+
+                if restaurant.latitude is not None and restaurant.longitude is not None:
+                    distance = haversine_distance_meters(
+                        point.latitude, point.longitude, restaurant.latitude, restaurant.longitude
+                    )
+                    if distance > point.radius_meters:
+                        continue
+
+                seen_osm_ids.add(restaurant.osm_id)
+                restaurants.append(restaurant)
+                found_here += 1
+
+            logger.info(
+                "%d établissement(s) trouvé(s) autour de (%.5f, %.5f) [%s, rayon %.0fm].",
+                found_here,
+                point.latitude,
+                point.longitude,
+                label,
+                point.radius_meters,
+            )
+
+            if index < len(points):
+                time.sleep(self._settings.overpass_rate_limit_seconds)
+
+        return restaurants
+
+    def _search_bbox(
+        self, bbox: BoundingBox, categories: Sequence[str], fallback_city: str
+    ) -> list[Restaurant]:
         elements = self._query_overpass(bbox, categories)
 
         restaurants: list[Restaurant] = []
         skipped = 0
         for element in elements:
-            restaurant = self._parse_element(element, fallback_city=city)
+            restaurant = self._parse_element(element, fallback_city=fallback_city)
             if restaurant is None:
                 skipped += 1
                 continue
@@ -66,7 +126,6 @@ class OverpassRestaurantSource(RestaurantSource):
         if skipped:
             logger.debug("%d éléments OSM ignorés (pas de nom exploitable).", skipped)
 
-        logger.info("%d établissement(s) trouvé(s) à %s.", len(restaurants), city)
         return restaurants
 
     def _query_overpass(self, bbox: BoundingBox, categories: Sequence[str]) -> list[dict]:

@@ -7,17 +7,22 @@ import responses
 
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import BoundingBox
+from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.sources.overpass_source import OverpassRestaurantSource
 
 
 class _StubGeocoder:
     """Remplace `NominatimGeocoder` pour isoler le test de la source Overpass."""
 
-    def __init__(self, bbox: BoundingBox) -> None:
+    def __init__(self, bbox: BoundingBox, reverse_label: str | None = None) -> None:
         self._bbox = bbox
+        self._reverse_label = reverse_label
 
     def geocode_city(self, city: str) -> BoundingBox:
         return self._bbox
+
+    def reverse_geocode_city(self, latitude: float, longitude: float) -> str | None:
+        return self._reverse_label
 
 
 @responses.activate
@@ -188,3 +193,123 @@ def test_find_restaurants_rejects_mirror_with_invalid_osm_timestamp() -> None:
 
     restaurants = source.find_restaurants("Lyon", categories=("restaurant",))
     assert restaurants[0].name == "Valid Mirror"
+
+
+@responses.activate
+def test_find_restaurants_near_points_uses_reverse_geocoded_label() -> None:
+    settings = Settings(overpass_rate_limit_seconds=0)
+    geocoder = _StubGeocoder(BoundingBox(south=0, north=0, west=0, east=0), reverse_label="Nice")
+
+    responses.add(
+        responses.POST,
+        settings.overpass_base_url,
+        json={
+            "osm3s": {"timestamp_osm_base": "2026-07-29T22:00:00Z"},
+            "elements": [
+                {
+                    "type": "node",
+                    "id": 1,
+                    "lat": 43.700,
+                    "lon": 7.268,
+                    "tags": {"name": "Le Safari", "amenity": "restaurant"},
+                }
+            ],
+        },
+        status=200,
+    )
+
+    source = OverpassRestaurantSource(
+        session=requests.Session(), settings=settings, geocoder=geocoder
+    )
+
+    restaurants = source.find_restaurants_near_points(
+        points=[PointQuery(43.700, 7.268, 500)], categories=("restaurant",)
+    )
+
+    assert len(restaurants) == 1
+    assert restaurants[0].city == "Nice"
+
+
+@responses.activate
+def test_find_restaurants_near_points_filters_out_of_radius_results() -> None:
+    settings = Settings(overpass_rate_limit_seconds=0)
+    geocoder = _StubGeocoder(BoundingBox(south=0, north=0, west=0, east=0))
+
+    responses.add(
+        responses.POST,
+        settings.overpass_base_url,
+        json={
+            "osm3s": {"timestamp_osm_base": "2026-07-29T22:00:00Z"},
+            "elements": [
+                {
+                    "type": "node",
+                    "id": 1,
+                    "lat": 43.700,
+                    "lon": 7.268,
+                    "tags": {"name": "Tout près", "amenity": "restaurant"},
+                },
+                {
+                    "type": "node",
+                    "id": 2,
+                    # ~5.5km plus loin : hors du rayon demandé.
+                    "lat": 43.750,
+                    "lon": 7.268,
+                    "tags": {"name": "Trop loin", "amenity": "restaurant"},
+                },
+            ],
+        },
+        status=200,
+    )
+
+    source = OverpassRestaurantSource(
+        session=requests.Session(), settings=settings, geocoder=geocoder
+    )
+
+    restaurants = source.find_restaurants_near_points(
+        points=[PointQuery(43.700, 7.268, 500)], categories=("restaurant",)
+    )
+
+    assert [r.name for r in restaurants] == ["Tout près"]
+
+
+@responses.activate
+def test_find_restaurants_near_points_deduplicates_overlapping_points() -> None:
+    settings = Settings(overpass_rate_limit_seconds=0)
+    geocoder = _StubGeocoder(BoundingBox(south=0, north=0, west=0, east=0))
+
+    shared_element = {
+        "type": "node",
+        "id": 1,
+        "lat": 43.700,
+        "lon": 7.268,
+        "tags": {"name": "Le Safari", "amenity": "restaurant"},
+    }
+    responses.add(
+        responses.POST,
+        settings.overpass_base_url,
+        json={
+            "osm3s": {"timestamp_osm_base": "2026-07-29T22:00:00Z"},
+            "elements": [shared_element],
+        },
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        settings.overpass_base_url,
+        json={
+            "osm3s": {"timestamp_osm_base": "2026-07-29T22:00:00Z"},
+            "elements": [shared_element],
+        },
+        status=200,
+    )
+
+    source = OverpassRestaurantSource(
+        session=requests.Session(), settings=settings, geocoder=geocoder
+    )
+
+    restaurants = source.find_restaurants_near_points(
+        points=[PointQuery(43.700, 7.268, 500), PointQuery(43.7005, 7.2685, 500)],
+        categories=("restaurant",),
+    )
+
+    assert len(restaurants) == 1
