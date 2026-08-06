@@ -5,6 +5,7 @@ from __future__ import annotations
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
+from restaurant_finder.enrichment.instagram_profile import InstagramProfile
 from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
 
 
@@ -16,6 +17,31 @@ class _StubSearchProvider(SearchProvider):
     def search(self, query: str, max_results: int) -> list[SearchResult]:
         self.call_count += 1
         return self._results[:max_results]
+
+
+class _StubProfileClient:
+    """Simule `InstagramProfileClient` sans appel réseau."""
+
+    def __init__(self, profiles: dict[str, InstagramProfile | None]) -> None:
+        self._profiles = profiles
+        self.fetch_count = 0
+
+    def get_profile(self, handle_or_url: str) -> InstagramProfile | None:
+        self.fetch_count += 1
+        handle = handle_or_url.rstrip("/").split("/")[-1]
+        return self._profiles.get(handle)
+
+
+def _profile(
+    username: str, full_name: str = "", biography: str = "", followers: int = 100
+) -> InstagramProfile:
+    return InstagramProfile(
+        username=username,
+        full_name=full_name,
+        biography=biography,
+        follower_count=followers,
+        is_private=False,
+    )
 
 
 class _FakeCache:
@@ -110,5 +136,110 @@ def test_find_uses_cache_and_avoids_second_search(sample_restaurant: Restaurant)
 
     assert first is None
     assert second is None
-    # 3 formulations de requête au 1er passage, puis lecture cache.
-    assert provider.call_count == 3
+    # 2 formulations de requête au 1er passage, puis lecture cache.
+    assert provider.call_count == 2
+
+
+def test_find_rejects_false_positive_using_real_profile_verification(
+    sample_restaurant: Restaurant,
+) -> None:
+    """Un extrait de recherche flatteur mais un vrai profil sans rapport : rejeté."""
+
+    results = [
+        SearchResult(
+            title="Le Petit Bistrot - avis, horaires, menu | annuaire restaurants",
+            url="https://www.instagram.com/xyz_random_account/",
+            snippet="Le Petit Bistrot Lyon restaurant",
+        )
+    ]
+    profiles = {
+        "xyz_random_account": _profile(
+            "xyz_random_account", full_name="Voyages & Photographie", biography="Blog voyage"
+        )
+    }
+    finder = InstagramFinder(
+        _StubSearchProvider(results), _settings(), profile_client=_StubProfileClient(profiles)
+    )
+
+    assert finder.find(sample_restaurant) is None
+
+
+def test_find_accepts_candidate_confirmed_by_profile_bio(sample_restaurant: Restaurant) -> None:
+    results = [
+        SearchResult(
+            title="Bistrot",
+            url="https://www.instagram.com/lepetitbistrot_off/",
+            snippet="",
+        )
+    ]
+    profiles = {
+        "lepetitbistrot_off": _profile(
+            "lepetitbistrot_off",
+            full_name="LPB",
+            biography="Le Petit Bistrot, cuisine traditionnelle à Lyon",
+            followers=300,
+        )
+    }
+    finder = InstagramFinder(
+        _StubSearchProvider(results), _settings(), profile_client=_StubProfileClient(profiles)
+    )
+
+    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot_off/"
+
+
+def test_find_only_checks_a_bounded_number_of_profiles(sample_restaurant: Restaurant) -> None:
+    results = [
+        SearchResult(title="Le Petit Bistrot", url=f"https://www.instagram.com/candidat{i}/")
+        for i in range(6)
+    ]
+    profile_client = _StubProfileClient({})  # aucun profil trouvable
+    finder = InstagramFinder(
+        _StubSearchProvider(results),
+        _settings(instagram_max_profile_checks=2),
+        profile_client=profile_client,
+    )
+
+    finder.find(sample_restaurant)
+
+    # `instagram_max_profile_checks=2` borne le total de vérifications réseau
+    # pour ce restaurant, même avec 6 candidats trouvés.
+    assert profile_client.fetch_count <= 2
+
+
+def test_find_rejects_same_name_different_city_chain_location() -> None:
+    """Piège classique : une enseigne régionale au nom quasi identique mais
+    située dans une autre ville (ex: "Le Castello" à Nice vs un compte
+    "@ilcastello_brest" sans lien réel avec le restaurant recherché)."""
+
+    restaurant = Restaurant(
+        osm_id="node/99", name="Le Castello", category="Restaurant", city="Nice"
+    )
+    results = [
+        SearchResult(title="Le Castello", url="https://www.instagram.com/ilcastello_brest/")
+    ]
+    profiles = {
+        # Ni le nom complet, ni la bio ne confirment la ville du restaurant (Nice).
+        "ilcastello_brest": _profile("ilcastello_brest", full_name="", biography="", followers=500)
+    }
+    finder = InstagramFinder(
+        _StubSearchProvider(results), _settings(), profile_client=_StubProfileClient(profiles)
+    )
+
+    assert finder.find(restaurant) is None
+
+
+def test_find_falls_back_to_text_score_when_instagram_is_unreachable(
+    sample_restaurant: Restaurant,
+) -> None:
+    results = [
+        SearchResult(
+            title="Le Petit Bistrot Officiel",
+            url="https://www.instagram.com/lepetitbistrot/",
+        )
+    ]
+    profile_client = _StubProfileClient({})  # get_profile renvoie toujours None
+    finder = InstagramFinder(
+        _StubSearchProvider(results), _settings(), profile_client=profile_client
+    )
+
+    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot/"

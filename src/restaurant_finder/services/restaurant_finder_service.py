@@ -17,7 +17,7 @@ from pathlib import Path
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
-from restaurant_finder.enrichment.instagram_followers import InstagramFollowerClient
+from restaurant_finder.enrichment.instagram_profile import InstagramProfileClient
 from restaurant_finder.export.base import Exporter
 from restaurant_finder.filtering.chain_filter import ChainRestaurantFilter
 from restaurant_finder.geocoding.geo_math import PointQuery
@@ -37,7 +37,7 @@ class RestaurantFinderService:
         source: RestaurantSource,
         settings: Settings,
         instagram_finder: InstagramFinder | None = None,
-        follower_client: InstagramFollowerClient | None = None,
+        follower_client: InstagramProfileClient | None = None,
         chain_filter: ChainRestaurantFilter | None = None,
     ) -> None:
         self._source = source

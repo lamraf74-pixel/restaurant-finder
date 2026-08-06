@@ -56,8 +56,8 @@ src/restaurant_finder/
 ├── enrichment/
 │   ├── matching.py               # Score de similarité nom ↔ résultat web (rapidfuzz)
 │   ├── instagram_normalize.py    # URL/handle Instagram <-> forme canonique
-│   ├── instagram_finder.py       # Orchestration de la recherche Instagram
-│   ├── instagram_followers.py    # Lecture du nombre de followers (filtre < N)
+│   ├── instagram_finder.py       # Recherche + vérification du candidat (anti faux-positifs)
+│   ├── instagram_profile.py      # Lecture du vrai profil (nom, bio, followers)
 │   └── search_providers/
 │       ├── base.py                # Interface SearchProvider
 │       └── ddgs_provider.py       # Implémentation via la librairie ddgs
@@ -103,7 +103,7 @@ src/restaurant_finder/
 | Panel web | FastAPI + Leaflet (JS vanilla) | Aucune étape de build, carte gratuite (OSM), même `RestaurantFinderService` que la CLI |
 | Données restaurants | OpenStreetMap (Overpass API) | Gratuit, sans clé API, données ouvertes |
 | Géocodage | Nominatim | Service OSM officiel pour convertir un nom de ville en zone géographique |
-| Recherche Instagram | librairie `ddgs` + matching rapidfuzz | Gratuit, sans clé API ; bien plus fiable que le scraping HTML DuckDuckGo (souvent bloqué) |
+| Recherche Instagram | librairie `ddgs` + vérification du vrai profil | Gratuit, sans clé API ; les candidats sont vérifiés contre le nom complet / la bio réels du compte (pas seulement l'extrait de recherche), ce qui élimine la plupart des faux positifs |
 | Validation des données | Pydantic | Modèles typés et auto-validés, sérialisation simple |
 | Export | pandas + openpyxl | Un seul DataFrame, deux formats de sortie cohérents |
 | Configuration | pydantic-settings | Variables d'environnement / `.env` sans configuration manuelle |
@@ -206,16 +206,23 @@ préfixées par `RF_`, ou un fichier `.env` à la racine (voir
 
 - `RF_USER_AGENT` : identifiez-vous auprès de Nominatim (obligatoire selon leur politique d'usage).
 - `RF_INSTAGRAM_SEARCH_DELAY_SECONDS` : espacement minimal entre les recherches Instagram.
-- `RF_INSTAGRAM_MATCH_THRESHOLD` : seuil de confiance (0-100) pour valider un profil Instagram.
+- `RF_INSTAGRAM_MATCH_THRESHOLD` : seuil de confiance (0-100) exigé sur le vrai profil pour valider un candidat.
+- `RF_INSTAGRAM_MAX_PROFILE_CHECKS` : nombre max. de profils vérifiés par établissement (borne le coût réseau).
+- `RF_INSTAGRAM_UNCONFIRMED_CITY_PENALTY` : pénalité appliquée si la ville n'est confirmée ni dans le handle ni dans la bio.
 - `RF_CACHE_TTL_SECONDS` : durée de vie du cache local.
 
 ## Limites connues
 
-- **Recherche Instagram heuristique** : il n'existe pas d'API Instagram
-  officielle gratuite pour retrouver un compte à partir d'un nom. Le
-  logiciel utilise la recherche web (`ddgs`) + un matching flou. Le
-  taux de trouvaille est bon mais pas parfait (homonymes, comptes
-  absents, mauvais matching possible). L'option `--only-with-instagram`
+- **Recherche Instagram heuristique, mais vérifiée** : il n'existe pas
+  d'API Instagram officielle gratuite pour retrouver un compte à partir
+  d'un nom. Le logiciel cherche des candidats via le web (`ddgs`), puis
+  **vérifie chaque candidat contre son vrai profil** (nom complet +
+  biographie, pas seulement l'extrait de recherche) avant de le retenir.
+  Une pénalité supplémentaire s'applique si la ville du restaurant n'est
+  confirmée nulle part (cas des enseignes régionales au nom quasi
+  identique mais situées dans une autre ville). Le taux de trouvaille
+  reste bon mais pas parfait ; en cas de doute, aucun compte n'est
+  renvoyé plutôt qu'un mauvais candidat. L'option `--only-with-instagram`
   permet de n'exporter que les profils effectivement trouvés.
 - **Couverture des données** : dépend de la qualité du référencement
   OpenStreetMap sur la zone recherchée (certains établissements peuvent

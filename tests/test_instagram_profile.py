@@ -1,4 +1,4 @@
-"""Tests du client de followers Instagram et du filtre associé."""
+"""Tests du client de profil Instagram (nom, bio, followers) et du filtre associé."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import responses
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
-from restaurant_finder.enrichment.instagram_followers import InstagramFollowerClient
+from restaurant_finder.enrichment.instagram_profile import InstagramProfileClient
 from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
 from restaurant_finder.sources.base import RestaurantSource
@@ -39,19 +39,67 @@ class _StubFollowerClient:
         return self._counts.get(handle)
 
 
+_PROFILE_HTML = (
+    '{{"full_name":"{full_name}","biography":"{biography}",'
+    '"is_private":{is_private},"follower_count":{followers},"username":"{handle}"}}'
+)
+
+
 @responses.activate
-def test_follower_client_parses_follower_count_from_profile_html() -> None:
+def test_get_profile_parses_full_name_biography_and_followers() -> None:
     settings = Settings(instagram_followers_delay_seconds=0)
     responses.add(responses.GET, "https://www.instagram.com/", body="ok", status=200)
     responses.add(
         responses.GET,
         "https://www.instagram.com/petitbistrot/",
-        body='{"follower_count":420,"username":"petitbistrot"}',
+        body=_PROFILE_HTML.format(
+            full_name="Le Petit Bistrot",
+            biography="Restaurant familial a Lyon",
+            is_private="false",
+            followers=420,
+            handle="petitbistrot",
+        ),
         status=200,
     )
 
-    client = InstagramFollowerClient(settings=settings, session=requests.Session())
+    client = InstagramProfileClient(settings=settings, session=requests.Session())
+    profile = client.get_profile("https://www.instagram.com/petitbistrot/")
+
+    assert profile is not None
+    assert profile.full_name == "Le Petit Bistrot"
+    assert profile.biography == "Restaurant familial a Lyon"
+    assert profile.follower_count == 420
+    assert profile.is_private is False
+
+
+@responses.activate
+def test_get_follower_count_delegates_to_get_profile() -> None:
+    settings = Settings(instagram_followers_delay_seconds=0)
+    responses.add(responses.GET, "https://www.instagram.com/", body="ok", status=200)
+    responses.add(
+        responses.GET,
+        "https://www.instagram.com/petitbistrot/",
+        body='{"follower_count":420}',
+        status=200,
+    )
+
+    client = InstagramProfileClient(settings=settings, session=requests.Session())
     assert client.get_follower_count("https://www.instagram.com/petitbistrot/") == 420
+
+
+@responses.activate
+def test_get_profile_returns_none_when_page_unreadable() -> None:
+    settings = Settings(instagram_followers_delay_seconds=0)
+    responses.add(responses.GET, "https://www.instagram.com/", body="ok", status=200)
+    responses.add(
+        responses.GET,
+        "https://www.instagram.com/inconnu/",
+        body="<html>login wall</html>",
+        status=200,
+    )
+
+    client = InstagramProfileClient(settings=settings, session=requests.Session())
+    assert client.get_profile("inconnu") is None
 
 
 def test_service_excludes_instagram_with_too_many_followers() -> None:
