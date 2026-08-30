@@ -169,7 +169,7 @@ restaurant-finder search "Nice" --limit 50 --only-with-instagram --output output
 # Inclure aussi les chaînes (tag OSM `brand` non vide + enseignes connues)
 restaurant-finder search "Nice" --include-chains --limit 20
 
-# Filtrer par type de cuisine OSM (défaut : bistro,pizza,sandwich,cafe,brunch)
+# Filtrer optionnellement par type de cuisine OSM (désactivé si omis)
 restaurant-finder search "Lyon" --cuisine "pizza,italian"
 restaurant-finder search "Lyon" --cuisine pizza,brunch
 
@@ -201,16 +201,17 @@ Par défaut, les **chaînes** sont exclues : tout établissement OSM avec un tag
 (McDo, Subway, Burger King, Starbucks, etc.). Utilise `--include-chains` pour
 les conserver.
 
-Le filtre **cuisine** (tag OSM `cuisine`) est actif par défaut avec les valeurs
-`bistro`, `pizza`, `sandwich`, `cafe`, `brunch`. Les établissements **sans** tag
-cuisine sont exclus. Passe `--cuisine "pizza,italian"` pour une liste
-personnalisée.
+Le filtre **cuisine** (tag OSM `cuisine`) est **optionnel** : sans
+`--cuisine`, tous les établissements sont conservés (hors chaînes). Avec
+`--cuisine "pizza,italian"`, seuls les tags listés sont gardés et les
+établissements **sans** tag cuisine sont exclus.
 
 Les comptes Instagram avec **1000 followers ou plus** sont aussi exclus (seuil
 réglable via `--max-followers`). Chaque association Instagram porte un niveau
-de confiance (`Élevé` / `Moyen` / `Faible`) : seuls les `Élevé` restent
-dans l'export principal ; `Moyen` et `Faible` partent dans
-`a_verifier.csv`.
+de confiance (`Élevé` / `Moyen` / `Faible`) : **Élevé** si le nom compacté
+correspond fortement au handle (égalité ou contenance) ; la ville n'est
+plus obligatoire (bonus seulement). Seuls les `Élevé` restent dans l'export
+principal ; `Moyen` et `Faible` partent dans `a_verifier.csv`.
 
 Équivalent sans installation du script : `python -m restaurant_finder search "Lyon"`.
 

@@ -120,13 +120,14 @@ def search(
             "`brand` non vide, plus les enseignes connues). Par défaut elles sont exclues."
         ),
     ),
-    cuisine: str = typer.Option(
-        ",".join(DEFAULT_CUISINES),
+    cuisine: str | None = typer.Option(
+        None,
         "--cuisine",
         help=(
-            "Filtre sur le tag OSM `cuisine` : valeurs séparées par des virgules. "
-            f"Par défaut : {', '.join(DEFAULT_CUISINES)}. "
-            "Les établissements sans tag cuisine sont exclus."
+            "Filtre optionnel sur le tag OSM `cuisine` : valeurs séparées par "
+            "des virgules (ex: bistro,pizza). Sans cette option, aucun filtre "
+            "cuisine n'est appliqué. Avec l'option, les établissements sans "
+            f"tag cuisine sont exclus. Exemples courants : {', '.join(DEFAULT_CUISINES)}."
         ),
     ),
     max_followers: int = typer.Option(
@@ -204,14 +205,15 @@ def search(
             "[dim]Filtre actif : chaînes exclues (tag OSM brand + enseignes connues).[/dim]"
         )
     cuisine_values = parse_cuisine_values(cuisine)
-    console.print(
-        f"[dim]Filtre cuisine : {', '.join(cuisine_values)} "
-        f"(sans tag cuisine → exclu).[/dim]"
-    )
+    if cuisine_values:
+        console.print(
+            f"[dim]Filtre cuisine : {', '.join(cuisine_values)} "
+            f"(sans tag cuisine -> exclu).[/dim]"
+        )
     if not no_instagram:
         console.print(
             f"[dim]Filtre Instagram : moins de {max_followers} followers ; "
-            f"confiance Moyen/Faible → output/a_verifier.csv.[/dim]"
+            f"confiance Moyen/Faible -> output/a_verifier.csv.[/dim]"
         )
 
     try:
@@ -252,7 +254,7 @@ def search(
         if to_review:
             console.print(
                 f"[yellow]{len(to_review)} association(s) Instagram Moyen/Faible "
-                f"écartée(s) du fichier principal → a_verifier.csv.[/yellow]"
+                f"écartée(s) du fichier principal -> a_verifier.csv.[/yellow]"
             )
 
         if only_with_instagram:

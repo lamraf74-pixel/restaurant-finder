@@ -68,9 +68,8 @@ class RestaurantFinderService:
         plusieurs lieux "pingués" (chacun avec son propre rayon) en une
         seule recherche étendue.
 
-        `cuisines` : liste de valeurs du tag OSM `cuisine` à conserver.
-        Si omis, utilise le filtre injecté à la construction, ou à défaut
-        les cuisines par défaut de la configuration.
+        `cuisines` : liste optionnelle de valeurs du tag OSM `cuisine` à
+        conserver. Si omis (``None``), aucun filtre cuisine n'est appliqué.
         """
 
         if not cities and not near_points:
@@ -90,14 +89,15 @@ class RestaurantFinderService:
         restaurants = self._dedupe_by_osm_id(restaurants)
 
         cuisine_filter = self._resolve_cuisine_filter(cuisines)
-        restaurants, cuisine_excluded = cuisine_filter.apply(restaurants)
-        if cuisine_excluded:
-            logger.info(
-                "%d établissement(s) exclu(s) par filtre cuisine (%s) — %d restant(s).",
-                cuisine_excluded,
-                ", ".join(sorted(cuisine_filter.allowed)),
-                len(restaurants),
-            )
+        if cuisine_filter is not None:
+            restaurants, cuisine_excluded = cuisine_filter.apply(restaurants)
+            if cuisine_excluded:
+                logger.info(
+                    "%d établissement(s) exclu(s) par filtre cuisine (%s) — %d restant(s).",
+                    cuisine_excluded,
+                    ", ".join(sorted(cuisine_filter.allowed)),
+                    len(restaurants),
+                )
 
         if exclude_chains:
             restaurants, excluded = self._chain_filter.exclude_chains(restaurants)
@@ -118,13 +118,14 @@ class RestaurantFinderService:
 
     def _resolve_cuisine_filter(
         self, cuisines: Sequence[str] | str | None
-    ) -> CuisineFilter:
+    ) -> CuisineFilter | None:
         if cuisines is None:
-            if self._cuisine_filter is not None:
-                return self._cuisine_filter
-            return CuisineFilter(self._settings.default_cuisines)
+            return self._cuisine_filter
         if isinstance(cuisines, str):
-            return CuisineFilter(parse_cuisine_values(cuisines))
+            parsed = parse_cuisine_values(cuisines)
+            return CuisineFilter(parsed) if parsed else None
+        if not cuisines:
+            return None
         return CuisineFilter(tuple(cuisines))
 
     @staticmethod

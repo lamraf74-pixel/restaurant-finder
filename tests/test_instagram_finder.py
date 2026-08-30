@@ -83,7 +83,7 @@ def test_find_returns_best_matching_instagram_profile(sample_restaurant: Restaur
     match = finder.find(sample_restaurant)
     assert match is not None
     assert match.url == "https://www.instagram.com/lepetitbistrot_officiel/"
-    assert match.confidence == InstagramConfidence.MOYEN  # nom dans handle, pas de bio
+    assert match.confidence == InstagramConfidence.ELEVE  # nom fort dans le handle
 
 
 def test_find_returns_none_when_no_candidate_passes_threshold(
@@ -120,7 +120,7 @@ def test_find_uses_osm_instagram_without_searching(sample_restaurant: Restaurant
     match = finder.find(sample_restaurant)
     assert match is not None
     assert match.url == "https://www.instagram.com/lepetitbistrot/"
-    assert match.confidence == InstagramConfidence.MOYEN
+    assert match.confidence == InstagramConfidence.ELEVE
     assert provider.call_count == 0
 
 
@@ -375,4 +375,4 @@ def test_find_falls_back_to_text_score_when_instagram_is_unreachable(
     match = finder.find(sample_restaurant)
     assert match is not None
     assert match.url == "https://www.instagram.com/lepetitbistrot/"
-    assert match.confidence == InstagramConfidence.MOYEN
+    assert match.confidence == InstagramConfidence.ELEVE

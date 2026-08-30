@@ -62,14 +62,6 @@ class Settings(BaseSettings):
     default_categories: tuple[str, ...] = ("restaurant", "cafe")
     # Rayon par défaut (mètres) autour de chaque point "pingué" (--near).
     default_search_radius_meters: float = 800.0
-    # Valeurs du tag OSM `cuisine` conservées par défaut.
-    default_cuisines: tuple[str, ...] = (
-        "bistro",
-        "pizza",
-        "sandwich",
-        "cafe",
-        "brunch",
-    )
 
     # --- Enrichissement Instagram ---
     # workers=1 : les backends de recherche publics supportent mal le parallèle.

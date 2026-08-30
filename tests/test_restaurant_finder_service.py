@@ -11,7 +11,7 @@ from restaurant_finder.services.restaurant_finder_service import RestaurantFinde
 from restaurant_finder.sources.base import RestaurantSource
 
 
-def _restaurant(osm_id: str, name: str, cuisine: str = "bistro") -> Restaurant:
+def _restaurant(osm_id: str, name: str, cuisine: str | None = None) -> Restaurant:
     return Restaurant(
         osm_id=osm_id, name=name, category="Restaurant", city="Nice", cuisine=cuisine
     )
@@ -96,19 +96,30 @@ def test_find_restaurants_merges_and_dedupes_cities_and_points() -> None:
     assert names == ["Doublon", "Uniquement point", "Uniquement ville"]
 
 
-def test_find_restaurants_filters_by_cuisine() -> None:
+def test_find_restaurants_does_not_filter_cuisine_by_default() -> None:
     source = _RecordingSource(
         by_city={
             "Nice": [
                 _restaurant("node/1", "Pizza", cuisine="pizza"),
                 _restaurant("node/2", "Sushi", cuisine="sushi"),
-                Restaurant(
-                    osm_id="node/3",
-                    name="Sans tag",
-                    category="Restaurant",
-                    city="Nice",
-                    cuisine=None,
-                ),
+                _restaurant("node/3", "Sans tag", cuisine=None),
+            ]
+        }
+    )
+    service = RestaurantFinderService(source=source, settings=Settings())
+
+    restaurants = service.find_restaurants(cities=["Nice"], enrich_instagram=False)
+
+    assert [r.name for r in restaurants] == ["Pizza", "Sushi", "Sans tag"]
+
+
+def test_find_restaurants_filters_by_cuisine_when_requested() -> None:
+    source = _RecordingSource(
+        by_city={
+            "Nice": [
+                _restaurant("node/1", "Pizza", cuisine="pizza"),
+                _restaurant("node/2", "Sushi", cuisine="sushi"),
+                _restaurant("node/3", "Sans tag", cuisine=None),
             ]
         }
     )
