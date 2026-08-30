@@ -29,7 +29,11 @@ from restaurant_finder.cache import FileCache
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import InstagramConfidence, Restaurant
 from restaurant_finder.enrichment.confidence import classify_instagram_confidence
-from restaurant_finder.enrichment.instagram_normalize import extract_handle, to_profile_url
+from restaurant_finder.enrichment.instagram_normalize import (
+    extract_handle,
+    extract_handles_from_text,
+    to_profile_url,
+)
 from restaurant_finder.enrichment.instagram_profile import InstagramProfile, InstagramProfileClient
 from restaurant_finder.enrichment.matching import score_candidate
 from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
@@ -44,8 +48,6 @@ _MIN_SHORTLIST_SCORE = 30
 #: Score minimal pour conserver un candidat non vérifié en confiance Faible
 #: (revue manuelle). En dessous : trop faible pour même figurer dans a_verifier.
 _MIN_UNCERTAIN_SCORE = 50
-#: Score jugé déjà si convaincant qu'inutile de lancer d'autres requêtes de recherche.
-_EARLY_STOP_SCORE = 90
 
 
 class InstagramMatch(NamedTuple):
@@ -157,13 +159,21 @@ class InstagramFinder:
                 )
                 continue
 
-            for handle, score in self._extract_candidates(restaurant, results):
+            batch = self._extract_candidates(restaurant, results)
+            if not batch:
+                # Aucun handle Instagram exploitable : on essaie la formulation suivante.
+                logger.debug(
+                    "Aucun candidat Instagram pour %r avec la requête %r — cascade.",
+                    restaurant.name,
+                    query,
+                )
+                continue
+
+            for handle, score in batch:
                 if score > candidates.get(handle, -1):
                     candidates[handle] = score
-
-            best_so_far = max(candidates.values(), default=-1)
-            if best_so_far >= _EARLY_STOP_SCORE:
-                break
+            # Des résultats exploitables ont été trouvés : on arrête la cascade.
+            break
 
         if not candidates:
             logger.debug("Aucun candidat Instagram trouvé pour %r.", restaurant.name)
@@ -174,33 +184,62 @@ class InstagramFinder:
 
     @staticmethod
     def _build_queries(restaurant: Restaurant) -> list[str]:
-        """Requêtes ciblées : moins de requêtes bruitées = moins de faux positifs."""
+        """Cascade de requêtes, de la plus précise à la plus large.
+
+        On ne passe à la suivante que si la précédente n'a renvoyé aucun
+        handle Instagram exploitable (voir `_search_instagram`).
+        """
 
         name = restaurant.name.strip()
         city = restaurant.city.strip()
+        if not name:
+            return []
+
+        if city:
+            return [
+                f'site:instagram.com "{name}" "{city}"',
+                f'"{name}" "{city}" instagram',
+                f'"{name}" instagram site:instagram.com',
+                f"{name} {city} instagram",
+            ]
         return [
-            # La plus précise : cible directement les profils Instagram.
-            f'site:instagram.com "{name}" {city}',
-            f'"{name}" {city} restaurant Instagram',
+            f'site:instagram.com "{name}"',
+            f'"{name}" instagram site:instagram.com',
+            f'"{name}" instagram',
+            f"{name} instagram",
         ]
 
     def _extract_candidates(
         self, restaurant: Restaurant, results: list[SearchResult]
     ) -> list[tuple[str, int]]:
         candidates: list[tuple[str, int]] = []
+        seen_in_batch: set[str] = set()
 
         for result in results:
-            handle = extract_handle(result.url)
-            if handle is None:
+            handles: list[str] = []
+            url_handle = extract_handle(result.url)
+            if url_handle is not None:
+                handles.append(url_handle)
+            for text_handle in extract_handles_from_text(f"{result.title} {result.snippet}"):
+                if text_handle.lower() not in {h.lower() for h in handles}:
+                    handles.append(text_handle)
+
+            if not handles:
                 continue
 
-            candidate_text = (
-                f"{result.title} {result.snippet} "
-                f"{handle.replace('.', ' ').replace('_', ' ')}"
-            )
-            score = score_candidate(restaurant.name, candidate_text)
-            score, _ = self._apply_city_bonus(restaurant, handle, score)
-            candidates.append((handle, score))
+            base_text = f"{result.title} {result.snippet}"
+            for handle in handles:
+                key = handle.lower()
+                if key in seen_in_batch:
+                    continue
+                seen_in_batch.add(key)
+
+                candidate_text = (
+                    f"{base_text} {handle.replace('.', ' ').replace('_', ' ')}"
+                )
+                score = score_candidate(restaurant.name, candidate_text)
+                score, _ = self._apply_city_bonus(restaurant, handle, score)
+                candidates.append((handle, score))
 
         return candidates
 

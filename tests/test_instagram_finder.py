@@ -13,10 +13,29 @@ class _StubSearchProvider(SearchProvider):
     def __init__(self, results: list[SearchResult]) -> None:
         self._results = results
         self.call_count = 0
+        self.queries: list[str] = []
 
     def search(self, query: str, max_results: int) -> list[SearchResult]:
         self.call_count += 1
+        self.queries.append(query)
         return self._results[:max_results]
+
+
+class _CascadingSearchProvider(SearchProvider):
+    """Renvoie des résultats différents selon le rang de la requête (pour tester la cascade)."""
+
+    def __init__(self, results_by_call: list[list[SearchResult]]) -> None:
+        self._results_by_call = results_by_call
+        self.call_count = 0
+        self.queries: list[str] = []
+
+    def search(self, query: str, max_results: int) -> list[SearchResult]:
+        self.queries.append(query)
+        index = self.call_count
+        self.call_count += 1
+        if index >= len(self._results_by_call):
+            return []
+        return self._results_by_call[index][:max_results]
 
 
 class _StubProfileClient:
@@ -125,9 +144,96 @@ def test_find_prefers_city_in_handle(sample_restaurant: Restaurant) -> None:
 
 def test_find_returns_none_when_no_instagram_url(sample_restaurant: Restaurant) -> None:
     results = [SearchResult(title="Le Petit Bistrot", url="https://www.facebook.com/lepetitbistrot/")]
-    finder = InstagramFinder(_StubSearchProvider(results), _settings())
+    provider = _StubSearchProvider(results)
+    finder = InstagramFinder(provider, _settings())
 
     assert finder.find(sample_restaurant) is None
+    # Cascade : 4 formulations tentées faute de handle Instagram exploitable.
+    assert provider.call_count == 4
+
+
+def test_build_queries_cascade_order(sample_restaurant: Restaurant) -> None:
+    queries = InstagramFinder._build_queries(sample_restaurant)
+    assert queries == [
+        'site:instagram.com "Le Petit Bistrot" "Lyon"',
+        '"Le Petit Bistrot" "Lyon" instagram',
+        '"Le Petit Bistrot" instagram site:instagram.com',
+        "Le Petit Bistrot Lyon instagram",
+    ]
+
+
+def test_cascade_stops_when_first_query_yields_candidates(
+    sample_restaurant: Restaurant,
+) -> None:
+    provider = _CascadingSearchProvider(
+        [
+            [
+                SearchResult(
+                    title="Le Petit Bistrot",
+                    url="https://www.instagram.com/lepetitbistrot/",
+                )
+            ],
+            [
+                SearchResult(
+                    title="Autre",
+                    url="https://www.instagram.com/autre_compte/",
+                )
+            ],
+        ]
+    )
+    finder = InstagramFinder(provider, _settings())
+
+    match = finder.find(sample_restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert provider.call_count == 1
+    assert provider.queries[0].startswith("site:instagram.com")
+
+
+def test_cascade_tries_next_query_when_first_has_no_instagram(
+    sample_restaurant: Restaurant,
+) -> None:
+    provider = _CascadingSearchProvider(
+        [
+            [SearchResult(title="Annuaire", url="https://tripadvisor.fr/le-petit-bistrot")],
+            [
+                SearchResult(
+                    title="Le Petit Bistrot Instagram",
+                    url="https://www.instagram.com/lepetitbistrot/",
+                )
+            ],
+        ]
+    )
+    finder = InstagramFinder(provider, _settings())
+
+    match = finder.find(sample_restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert provider.call_count == 2
+    assert '"Le Petit Bistrot" "Lyon" instagram' in provider.queries[1]
+
+
+def test_extracts_instagram_handle_from_snippet_when_url_is_not_instagram(
+    sample_restaurant: Restaurant,
+) -> None:
+    results = [
+        SearchResult(
+            title="Le Petit Bistrot — restaurant à Lyon",
+            url="https://www.lepetitbistrot-lyon.fr/",
+            snippet=(
+                "Réservez et suivez-nous sur Instagram : "
+                "https://www.instagram.com/lepetitbistrot_off/"
+            ),
+        )
+    ]
+    finder = InstagramFinder(_StubSearchProvider(results), _settings())
+
+    match = finder.find(sample_restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot_off/"
 
 
 def test_find_uses_cache_and_avoids_second_search(sample_restaurant: Restaurant, tmp_path) -> None:
