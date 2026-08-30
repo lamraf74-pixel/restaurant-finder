@@ -7,6 +7,8 @@ convergent vers (ou partent de) `Restaurant`.
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +19,14 @@ class BoundingBox(BaseModel):
     north: float
     west: float
     east: float
+
+
+class InstagramConfidence(str, Enum):
+    """Niveau de confiance d'une association restaurant ↔ Instagram."""
+
+    ELEVE = "Élevé"
+    MOYEN = "Moyen"
+    FAIBLE = "Faible"
 
 
 class Restaurant(BaseModel):
@@ -37,10 +47,18 @@ class Restaurant(BaseModel):
         default=None,
         description="Opérateur OSM (`operator`) si renseigné.",
     )
+    cuisine: str | None = Field(
+        default=None,
+        description="Tag OSM `cuisine` brut (peut contenir plusieurs valeurs séparées par `;`).",
+    )
     instagram_url: str | None = None
     instagram_followers: int | None = Field(
         default=None,
         description="Nombre de followers Instagram, si disponible.",
+    )
+    instagram_confidence: InstagramConfidence | None = Field(
+        default=None,
+        description="Niveau de confiance de l'association Instagram (Élevé / Moyen / Faible).",
     )
 
     @property
@@ -56,7 +74,7 @@ class Restaurant(BaseModel):
         """Convertit le restaurant en ligne prête pour l'export (CSV/Excel).
 
         Les noms de colonnes correspondent exactement au format de sortie
-        attendu : Nom, Instagram, Adresse, Ville, Catégorie.
+        attendu : Nom, Instagram, Adresse, Ville, Catégorie, Confiance.
         La colonne Instagram contient le handle (ex: bistrot_le_cerey), pas l'URL.
         """
 
@@ -66,4 +84,7 @@ class Restaurant(BaseModel):
             "Adresse": self.address,
             "Ville": self.city,
             "Catégorie": self.category,
+            "Confiance": (
+                self.instagram_confidence.value if self.instagram_confidence else ""
+            ),
         }

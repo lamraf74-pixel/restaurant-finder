@@ -23,6 +23,16 @@ def test_version_flag_prints_version_and_exits() -> None:
     assert "restaurant-finder" in result.output
 
 
+def test_search_help_lists_cuisine_and_include_chains() -> None:
+    result = runner.invoke(app, ["search", "--help"])
+
+    assert result.exit_code == 0
+    assert "--cuisine" in result.output
+    assert "--include-chains" in result.output
+    assert "bistro" in result.output
+    assert "a_verifier" in result.output
+
+
 def test_search_rejects_unknown_category() -> None:
     result = runner.invoke(app, ["search", "Lyon", "--category", "brasserie"])
 

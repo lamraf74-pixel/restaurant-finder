@@ -21,7 +21,9 @@ class CsvExporter(Exporter):
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         rows = [restaurant.to_export_row() for restaurant in restaurants]
-        dataframe = pd.DataFrame(rows, columns=["Nom", "Instagram", "Adresse", "Ville", "Catégorie"])
+        dataframe = pd.DataFrame(
+            rows, columns=["Nom", "Instagram", "Adresse", "Ville", "Catégorie", "Confiance"]
+        )
 
         try:
             # encoding="utf-8-sig" pour qu'Excel affiche correctement les accents.

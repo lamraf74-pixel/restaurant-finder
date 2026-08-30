@@ -35,6 +35,15 @@ def test_keeps_independent_bistro() -> None:
     assert not filt.is_chain(_restaurant("La Voglia"))
 
 
+def test_detects_any_non_empty_brand_as_chain() -> None:
+    filt = ChainRestaurantFilter()
+    assert filt.is_chain(_restaurant("Le Local", brand="Enseigne Régionale"))
+    assert filt.is_chain(_restaurant("Burger Place", brand="  Quick Franchise  "))
+    assert not filt.is_chain(_restaurant("Le Local", brand=None))
+    assert not filt.is_chain(_restaurant("Le Local", brand=""))
+    assert not filt.is_chain(_restaurant("Le Local", brand="   "))
+
+
 def test_exclude_chains_returns_only_independents() -> None:
     filt = ChainRestaurantFilter()
     restaurants = [

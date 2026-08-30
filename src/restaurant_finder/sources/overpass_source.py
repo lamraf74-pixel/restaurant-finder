@@ -246,5 +246,6 @@ class OverpassRestaurantSource(RestaurantSource):
             longitude=longitude,
             brand=tags.get("brand"),
             operator=tags.get("operator"),
+            cuisine=tags.get("cuisine"),
             instagram_url=instagram_url,
         )

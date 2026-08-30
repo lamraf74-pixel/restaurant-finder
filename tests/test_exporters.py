@@ -10,16 +10,21 @@ from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.export.csv_exporter import CsvExporter
 from restaurant_finder.export.excel_exporter import ExcelExporter
 
-_EXPECTED_COLUMNS = ["Nom", "Instagram", "Adresse", "Ville", "Catégorie"]
+_EXPECTED_COLUMNS = ["Nom", "Instagram", "Adresse", "Ville", "Catégorie", "Confiance"]
 
 
 def _sample_restaurants(sample_restaurant: Restaurant) -> list[Restaurant]:
+    from restaurant_finder.domain.models import InstagramConfidence
+
+    sample_restaurant.instagram_url = "https://www.instagram.com/lepetitbistrot/"
+    sample_restaurant.instagram_confidence = InstagramConfidence.ELEVE
     other = Restaurant(
         osm_id="node/2",
         name="Café du Coin",
         category="Café",
         city="Lyon",
         instagram_url="https://www.instagram.com/cafeducoin/",
+        instagram_confidence=InstagramConfidence.MOYEN,
     )
     return [sample_restaurant, other]
 
@@ -36,6 +41,8 @@ def test_csv_exporter_writes_expected_columns_and_adds_extension(
     assert list(dataframe.columns) == _EXPECTED_COLUMNS
     assert dataframe.iloc[0]["Nom"] == sample_restaurant.name
     assert dataframe.iloc[1]["Instagram"] == "cafeducoin"
+    assert dataframe.iloc[0]["Confiance"] == "Élevé"
+    assert dataframe.iloc[1]["Confiance"] == "Moyen"
 
 
 def test_excel_exporter_writes_expected_columns_and_adds_extension(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from restaurant_finder.config import Settings
-from restaurant_finder.domain.models import Restaurant
+from restaurant_finder.domain.models import InstagramConfidence, Restaurant
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
 from restaurant_finder.enrichment.instagram_profile import InstagramProfile
 from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
@@ -33,26 +33,18 @@ class _StubProfileClient:
 
 
 def _profile(
-    username: str, full_name: str = "", biography: str = "", followers: int = 100
+    handle: str,
+    full_name: str = "",
+    biography: str = "",
+    followers: int = 100,
 ) -> InstagramProfile:
     return InstagramProfile(
-        username=username,
+        username=handle,
         full_name=full_name,
         biography=biography,
         follower_count=followers,
         is_private=False,
     )
-
-
-class _FakeCache:
-    def __init__(self) -> None:
-        self.store: dict[str, object] = {}
-
-    def get(self, key: str) -> object | None:
-        return self.store.get(key)
-
-    def set(self, key: str, value: object) -> None:
-        self.store[key] = value
 
 
 def _settings(**overrides: object) -> Settings:
@@ -69,10 +61,15 @@ def test_find_returns_best_matching_instagram_profile(sample_restaurant: Restaur
     ]
     finder = InstagramFinder(_StubSearchProvider(results), _settings())
 
-    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot_officiel/"
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot_officiel/"
+    assert match.confidence == InstagramConfidence.MOYEN  # nom dans handle, pas de bio
 
 
-def test_find_returns_none_when_no_result_meets_threshold(sample_restaurant: Restaurant) -> None:
+def test_find_returns_none_when_no_candidate_passes_threshold(
+    sample_restaurant: Restaurant,
+) -> None:
     results = [
         SearchResult(
             title="Pharmacie du Centre", url="https://www.instagram.com/pharmacieducentre/"
@@ -91,59 +88,74 @@ def test_find_ignores_non_profile_instagram_urls(sample_restaurant: Restaurant) 
     ]
     finder = InstagramFinder(_StubSearchProvider(results), _settings())
 
-    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot/"
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
 
 
 def test_find_uses_osm_instagram_without_searching(sample_restaurant: Restaurant) -> None:
-    sample_restaurant.instagram_url = "https://www.instagram.com/osm_handle/"
+    sample_restaurant.instagram_url = "https://www.instagram.com/lepetitbistrot/"
     provider = _StubSearchProvider([])
     finder = InstagramFinder(provider, _settings())
 
-    assert finder.find(sample_restaurant) == "https://www.instagram.com/osm_handle/"
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert match.confidence == InstagramConfidence.MOYEN
     assert provider.call_count == 0
 
 
-def test_find_boosts_handle_containing_city_name(sample_restaurant: Restaurant) -> None:
+def test_find_prefers_city_in_handle(sample_restaurant: Restaurant) -> None:
     results = [
         SearchResult(
-            title="Autre compte",
+            title="Foodie",
             url="https://www.instagram.com/randomfoodie/",
         ),
         SearchResult(
-            title="Le Petit Bistrot Nice",
+            title="Le Petit Bistrot Lyon",
             url="https://www.instagram.com/lepetitbistrot_lyon/",
         ),
     ]
     finder = InstagramFinder(_StubSearchProvider(results), _settings(instagram_match_threshold=40))
 
-    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot_lyon/"
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot_lyon/"
 
 
-def test_find_ignores_urls_from_other_domains(sample_restaurant: Restaurant) -> None:
+def test_find_returns_none_when_no_instagram_url(sample_restaurant: Restaurant) -> None:
     results = [SearchResult(title="Le Petit Bistrot", url="https://www.facebook.com/lepetitbistrot/")]
     finder = InstagramFinder(_StubSearchProvider(results), _settings())
 
     assert finder.find(sample_restaurant) is None
 
 
-def test_find_uses_cache_and_avoids_second_search(sample_restaurant: Restaurant) -> None:
-    provider = _StubSearchProvider([])
-    cache = _FakeCache()
+def test_find_uses_cache_and_avoids_second_search(sample_restaurant: Restaurant, tmp_path) -> None:
+    from restaurant_finder.cache import FileCache
+
+    provider = _StubSearchProvider(
+        [
+            SearchResult(
+                title="Le Petit Bistrot",
+                url="https://www.instagram.com/lepetitbistrot/",
+            )
+        ]
+    )
+    cache = FileCache(tmp_path, ttl_seconds=3600)
     finder = InstagramFinder(provider, _settings(), cache=cache)
 
     first = finder.find(sample_restaurant)
     second = finder.find(sample_restaurant)
 
-    assert first is None
-    assert second is None
-    # 2 formulations de requête au 1er passage, puis lecture cache.
-    assert provider.call_count == 2
+    assert first is not None and second is not None
+    assert first.url == second.url
+    assert provider.call_count == 1
 
 
-def test_find_rejects_false_positive_using_real_profile_verification(
+def test_find_marks_false_positive_as_faible_for_manual_review(
     sample_restaurant: Restaurant,
 ) -> None:
-    """Un extrait de recherche flatteur mais un vrai profil sans rapport : rejeté."""
+    """Un extrait flatteur mais un vrai profil sans rapport : confiance Faible."""
 
     results = [
         SearchResult(
@@ -161,7 +173,10 @@ def test_find_rejects_false_positive_using_real_profile_verification(
         _StubSearchProvider(results), _settings(), profile_client=_StubProfileClient(profiles)
     )
 
-    assert finder.find(sample_restaurant) is None
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/xyz_random_account/"
+    assert match.confidence == InstagramConfidence.FAIBLE
 
 
 def test_find_accepts_candidate_confirmed_by_profile_bio(sample_restaurant: Restaurant) -> None:
@@ -184,7 +199,10 @@ def test_find_accepts_candidate_confirmed_by_profile_bio(sample_restaurant: Rest
         _StubSearchProvider(results), _settings(), profile_client=_StubProfileClient(profiles)
     )
 
-    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot_off/"
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot_off/"
+    assert match.confidence == InstagramConfidence.ELEVE
 
 
 def test_find_only_checks_a_bounded_number_of_profiles(sample_restaurant: Restaurant) -> None:
@@ -206,10 +224,8 @@ def test_find_only_checks_a_bounded_number_of_profiles(sample_restaurant: Restau
     assert profile_client.fetch_count <= 2
 
 
-def test_find_rejects_same_name_different_city_chain_location() -> None:
-    """Piège classique : une enseigne régionale au nom quasi identique mais
-    située dans une autre ville (ex: "Le Castello" à Nice vs un compte
-    "@ilcastello_brest" sans lien réel avec le restaurant recherché)."""
+def test_find_marks_same_name_different_city_as_faible() -> None:
+    """Enseigne régionale au nom proche mais autre ville → Faible (revue manuelle)."""
 
     restaurant = Restaurant(
         osm_id="node/99", name="Le Castello", category="Restaurant", city="Nice"
@@ -217,15 +233,23 @@ def test_find_rejects_same_name_different_city_chain_location() -> None:
     results = [
         SearchResult(title="Le Castello", url="https://www.instagram.com/ilcastello_brest/")
     ]
+    # Ni le nom complet, ni la bio ne confirment la ville du restaurant (Nice).
+    # Score profil insuffisant → candidat conservé en Faible pour revue manuelle.
     profiles = {
-        # Ni le nom complet, ni la bio ne confirment la ville du restaurant (Nice).
-        "ilcastello_brest": _profile("ilcastello_brest", full_name="", biography="", followers=500)
+        "ilcastello_brest": _profile(
+            "ilcastello_brest",
+            full_name="Il Castello Brest",
+            biography="Restaurant italien à Brest",
+            followers=500,
+        )
     }
     finder = InstagramFinder(
         _StubSearchProvider(results), _settings(), profile_client=_StubProfileClient(profiles)
     )
 
-    assert finder.find(restaurant) is None
+    match = finder.find(restaurant)
+    assert match is not None
+    assert match.confidence == InstagramConfidence.FAIBLE
 
 
 def test_find_falls_back_to_text_score_when_instagram_is_unreachable(
@@ -242,4 +266,7 @@ def test_find_falls_back_to_text_score_when_instagram_is_unreachable(
         _StubSearchProvider(results), _settings(), profile_client=profile_client
     )
 
-    assert finder.find(sample_restaurant) == "https://www.instagram.com/lepetitbistrot/"
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert match.confidence == InstagramConfidence.MOYEN

@@ -24,6 +24,7 @@ class SearchRequest(BaseModel):
     enrich_instagram: bool = True
     only_with_instagram: bool = False
     include_chains: bool = False
+    cuisine: str = "bistro,pizza,sandwich,cafe,brunch"
     max_followers: int = 1000
     keep_unknown_followers: bool = False
 
@@ -34,6 +35,7 @@ class ResultRow(BaseModel):
     name: str
     instagram: str | None = None
     instagram_followers: int | None = None
+    instagram_confidence: str | None = None
     address: str
     city: str
     category: str

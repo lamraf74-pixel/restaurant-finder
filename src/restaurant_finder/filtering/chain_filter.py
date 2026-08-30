@@ -98,7 +98,15 @@ class ChainRestaurantFilter:
         self._compiled = [re.compile(pattern, re.IGNORECASE) for pattern in raw_patterns]
 
     def is_chain(self, restaurant: Restaurant) -> bool:
-        """Retourne True si l'établissement ressemble à une enseigne connue."""
+        """Retourne True si l'établissement ressemble à une enseigne / chaîne.
+
+        Règles (dans l'ordre) :
+        1. tag OSM ``brand`` non vide → considéré comme chaîne ;
+        2. sinon, motifs connus sur le nom / brand / operator.
+        """
+
+        if restaurant.brand and restaurant.brand.strip():
+            return True
 
         haystacks = [
             normalize_text(restaurant.name),

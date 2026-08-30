@@ -32,6 +32,16 @@ def normalize_text(text: str) -> str:
     return text
 
 
+def compact_text(text: str) -> str:
+    """Comme `normalize_text`, mais sans aucun séparateur (espaces / tirets).
+
+    Utile pour matcher un nom de restaurant avec un handle Instagram du type
+    ``le_petit_bistrot`` ou ``lepetitbistrot``.
+    """
+
+    return normalize_text(text).replace(" ", "")
+
+
 def join_non_empty(parts: list[str | None], separator: str = ", ") -> str:
     """Joint les éléments non vides d'une liste avec un séparateur."""
 

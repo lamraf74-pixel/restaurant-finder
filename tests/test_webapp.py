@@ -28,6 +28,14 @@ class _StubService:
         return restaurants
 
     @staticmethod
+    def split_by_instagram_confidence(restaurants):  # type: ignore[no-untyped-def]
+        from restaurant_finder.services.restaurant_finder_service import (
+            RestaurantFinderService,
+        )
+
+        return RestaurantFinderService.split_by_instagram_confidence(restaurants)
+
+    @staticmethod
     def export(restaurants, exporters, destination):  # type: ignore[no-untyped-def]
         return [exporter.export(restaurants, destination) for exporter in exporters]
 

@@ -19,6 +19,8 @@ from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.exceptions import RestaurantFinderError
 from restaurant_finder.export import EXPORTERS
+from restaurant_finder.export.csv_exporter import CsvExporter
+from restaurant_finder.filtering.cuisine_filter import parse_cuisine_values
 from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
 from restaurant_finder.webapp.schemas import JobStatusResponse, ResultRow, SearchRequest
@@ -47,6 +49,11 @@ class _Job:
                     name=restaurant.name,
                     instagram=restaurant.instagram_handle,
                     instagram_followers=restaurant.instagram_followers,
+                    instagram_confidence=(
+                        restaurant.instagram_confidence.value
+                        if restaurant.instagram_confidence
+                        else None
+                    ),
                     address=restaurant.address,
                     city=restaurant.city,
                     category=restaurant.category,
@@ -133,6 +140,7 @@ class JobManager:
                 limit=payload.limit,
                 enrich_instagram=False,
                 exclude_chains=not payload.include_chains,
+                cuisines=parse_cuisine_values(payload.cuisine),
             )
 
             if not restaurants:
@@ -140,6 +148,7 @@ class JobManager:
                 job.message = "Aucun établissement trouvé pour cette recherche."
                 return
 
+            to_review: list[Restaurant] = []
             if payload.enrich_instagram:
                 job.status = "enriching"
                 job.progress_total = len(restaurants)
@@ -151,11 +160,12 @@ class JobManager:
                     job.message = f"Recherche des profils Instagram ({done}/{total})..."
 
                 restaurants = service.enrich_with_instagram(restaurants, on_progress=on_progress)
+                restaurants, to_review = service.split_by_instagram_confidence(restaurants)
 
                 if payload.only_with_instagram:
                     restaurants = [r for r in restaurants if r.instagram_url]
 
-            if not restaurants:
+            if not restaurants and not to_review:
                 job.status = "done"
                 job.message = "Aucun établissement avec Instagram trouvé."
                 return
@@ -165,12 +175,22 @@ class JobManager:
 
             destination = self._output_root / job.job_id / "resultats"
             exporters = [EXPORTERS[fmt] for fmt in payload.formats]
-            exported_paths = service.export(restaurants, exporters, destination)
-            job.file_paths = dict(zip(payload.formats, exported_paths, strict=True))
+            exported_paths = (
+                service.export(restaurants, exporters, destination) if restaurants else []
+            )
+            file_paths = dict(zip(payload.formats, exported_paths, strict=True))
+            if to_review:
+                review_path = CsvExporter().export(
+                    to_review, self._output_root / job.job_id / "a_verifier"
+                )
+                file_paths["a_verifier"] = review_path
+            job.file_paths = file_paths
 
             job.restaurants = restaurants
             job.status = "done"
             job.message = f"{len(restaurants)} établissement(s) trouvé(s)."
+            if to_review:
+                job.message += f" ({len(to_review)} Instagram Faible → a_verifier)."
         except RestaurantFinderError as exc:
             job.status = "error"
             job.error = str(exc)

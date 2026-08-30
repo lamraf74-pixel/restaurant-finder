@@ -5,7 +5,7 @@ Outil en ligne de commande qui recherche automatiquement les restaurants
 **OpenStreetMap**, tente de retrouver le **profil Instagram officiel** de
 chaque établissement, puis exporte le résultat en **CSV** et **Excel**.
 
-Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`.
+Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`, `Confiance` (`Élevé` / `Moyen`). Les associations Instagram notées `Faible` sont exclues du fichier principal et enregistrées dans `output/a_verifier.csv` pour revue manuelle.
 
 ## Sommaire
 
@@ -55,6 +55,7 @@ src/restaurant_finder/
 │   └── overpass_source.py       # Implémentation OpenStreetMap / Overpass (ville et/ou points)
 ├── enrichment/
 │   ├── matching.py               # Score de similarité nom ↔ résultat web (rapidfuzz)
+│   ├── confidence.py             # Classification Élevé / Moyen / Faible
 │   ├── instagram_normalize.py    # URL/handle Instagram <-> forme canonique
 │   ├── instagram_finder.py       # Recherche + vérification du candidat (anti faux-positifs)
 │   ├── instagram_profile.py      # Lecture du vrai profil (nom, bio, followers)
@@ -62,7 +63,8 @@ src/restaurant_finder/
 │       ├── base.py                # Interface SearchProvider
 │       └── ddgs_provider.py       # Implémentation via la librairie ddgs
 ├── filtering/
-│   └── chain_filter.py           # Exclusion des grandes enseignes / franchises
+│   ├── chain_filter.py           # Exclusion des chaînes (tag brand + enseignes connues)
+│   └── cuisine_filter.py         # Filtre sur le tag OSM cuisine
 ├── export/
 │   ├── base.py                   # Interface Exporter
 │   ├── csv_exporter.py
@@ -164,8 +166,12 @@ restaurant-finder search "Marseille" --no-instagram
 # Uniquement les établissements avec un Instagram trouvé (cas d'usage principal)
 restaurant-finder search "Nice" --limit 50 --only-with-instagram --output output/nice_instagram
 
-# Inclure aussi les grandes enseignes (désactive le filtre franchises)
+# Inclure aussi les chaînes (tag OSM `brand` non vide + enseignes connues)
 restaurant-finder search "Nice" --include-chains --limit 20
+
+# Filtrer par type de cuisine OSM (défaut : bistro,pizza,sandwich,cafe,brunch)
+restaurant-finder search "Lyon" --cuisine "pizza,italian"
+restaurant-finder search "Lyon" --cuisine pizza,brunch
 
 # Logs détaillés (debug)
 restaurant-finder search "Nice" --verbose
@@ -190,9 +196,20 @@ Une URL Google Maps complète (copiée depuis la barre d'adresse, ou un lien cou
 
 `--near` est **répétable** : chaque lieu ajouté étend la zone de recherche. Les résultats de tous les lieux (et de la ville, si fournie) sont fusionnés et dédupliqués automatiquement. `--radius` (en mètres, 800 par défaut) s'applique à chaque `--near`.
 
-Par défaut, les **grandes enseignes / franchises** (McDo, Subway, Burger King, Starbucks, etc.) sont **exclues** avant la recherche Instagram, pour ne garder que les indépendants.
+Par défaut, les **chaînes** sont exclues : tout établissement OSM avec un tag
+`brand` non vide, ainsi que les enseignes connues détectées par nom
+(McDo, Subway, Burger King, Starbucks, etc.). Utilise `--include-chains` pour
+les conserver.
 
-Les comptes Instagram avec **1000 followers ou plus** sont aussi exclus (seuil réglable via `--max-followers`).
+Le filtre **cuisine** (tag OSM `cuisine`) est actif par défaut avec les valeurs
+`bistro`, `pizza`, `sandwich`, `cafe`, `brunch`. Les établissements **sans** tag
+cuisine sont exclus. Passe `--cuisine "pizza,italian"` pour une liste
+personnalisée.
+
+Les comptes Instagram avec **1000 followers ou plus** sont aussi exclus (seuil
+réglable via `--max-followers`). Chaque association Instagram porte un niveau
+de confiance (`Élevé` / `Moyen` / `Faible`) : les `Faible` partent dans
+`a_verifier.csv` plutôt que dans l'export principal.
 
 Équivalent sans installation du script : `python -m restaurant_finder search "Lyon"`.
 

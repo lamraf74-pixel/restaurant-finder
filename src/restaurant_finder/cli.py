@@ -21,6 +21,8 @@ from restaurant_finder.config import DEFAULT_CATEGORY_LABELS, get_settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.exceptions import LocationParsingError, RestaurantFinderError
 from restaurant_finder.export import EXPORTERS
+from restaurant_finder.export.csv_exporter import CsvExporter
+from restaurant_finder.filtering.cuisine_filter import DEFAULT_CUISINES, parse_cuisine_values
 from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
 from restaurant_finder.utils.logging import setup_logging
@@ -114,8 +116,17 @@ def search(
         False,
         "--include-chains",
         help=(
-            "Inclut les grandes enseignes / franchises (McDo, Subway, Burger King...). "
-            "Par défaut elles sont exclues."
+            "Inclut les chaînes / franchises (tout établissement OSM avec un tag "
+            "`brand` non vide, plus les enseignes connues). Par défaut elles sont exclues."
+        ),
+    ),
+    cuisine: str = typer.Option(
+        ",".join(DEFAULT_CUISINES),
+        "--cuisine",
+        help=(
+            "Filtre sur le tag OSM `cuisine` : valeurs séparées par des virgules. "
+            f"Par défaut : {', '.join(DEFAULT_CUISINES)}. "
+            "Les établissements sans tag cuisine sont exclus."
         ),
     ),
     max_followers: int = typer.Option(
@@ -136,7 +147,12 @@ def search(
         False, "--verbose", "-v", help="Active les logs détaillés (debug)."
     ),
 ) -> None:
-    """Recherche les restaurants d'une ville et exporte les résultats en CSV/Excel."""
+    """Recherche les restaurants d'une ville et exporte les résultats en CSV/Excel.
+
+    Les associations Instagram de confiance Faible sont exclues du fichier
+    principal et sauvegardées dans ``a_verifier.csv`` (même dossier que
+    ``--output``) pour vérification manuelle.
+    """
 
     setup_logging(verbose=verbose)
 
@@ -183,10 +199,18 @@ def search(
             f"[bold](rayon {radius:.0f}m)[/bold]..."
         )
     if not include_chains:
-        console.print("[dim]Filtre actif : enseignes / franchises exclues.[/dim]")
+        console.print(
+            "[dim]Filtre actif : chaînes exclues (tag OSM brand + enseignes connues).[/dim]"
+        )
+    cuisine_values = parse_cuisine_values(cuisine)
+    console.print(
+        f"[dim]Filtre cuisine : {', '.join(cuisine_values)} "
+        f"(sans tag cuisine → exclu).[/dim]"
+    )
     if not no_instagram:
         console.print(
-            f"[dim]Filtre Instagram : moins de {max_followers} followers.[/dim]"
+            f"[dim]Filtre Instagram : moins de {max_followers} followers ; "
+            f"confiance Faible → output/a_verifier.csv.[/dim]"
         )
 
     try:
@@ -198,6 +222,7 @@ def search(
                 limit=limit,
                 enrich_instagram=False,
                 exclude_chains=not include_chains,
+                cuisines=cuisine_values,
             )
     except RestaurantFinderError as exc:
         console.print(f"[bold red]Erreur :[/bold red] {exc}")
@@ -220,22 +245,45 @@ def search(
             f"[magenta]{with_instagram}/{len(restaurants)} profil(s) Instagram trouvé(s).[/magenta]"
         )
 
+        restaurants, to_review = RestaurantFinderService.split_by_instagram_confidence(
+            restaurants
+        )
+        if to_review:
+            console.print(
+                f"[yellow]{len(to_review)} association(s) Instagram Faible "
+                f"écartée(s) du fichier principal → a_verifier.csv.[/yellow]"
+            )
+
         if only_with_instagram:
             restaurants = [item for item in restaurants if item.instagram_url]
-            if not restaurants:
+            if not restaurants and not to_review:
                 console.print(
                     "[yellow]Aucun profil Instagram trouvé : rien à exporter.[/yellow]"
                 )
                 raise typer.Exit(code=0)
-            console.print(
-                f"[green]Export filtré : {len(restaurants)} établissement(s) avec Instagram.[/green]"
-            )
+            if restaurants:
+                console.print(
+                    f"[green]Export filtré : {len(restaurants)} établissement(s) "
+                    f"avec Instagram (Élevé/Moyen).[/green]"
+                )
+    else:
+        to_review = []
 
-    _print_summary_table(restaurants)
+    if not restaurants and not to_review:
+        console.print("[yellow]Aucun établissement à exporter.[/yellow]")
+        raise typer.Exit(code=0)
+
+    if restaurants:
+        _print_summary_table(restaurants)
 
     exporters = [EXPORTERS[fmt] for fmt in formats]
     try:
-        exported_paths = service.export(restaurants, exporters, output)
+        exported_paths: list[Path] = []
+        if restaurants:
+            exported_paths.extend(service.export(restaurants, exporters, output))
+        if to_review:
+            review_path = output.parent / "a_verifier"
+            exported_paths.append(CsvExporter().export(to_review, review_path))
     except RestaurantFinderError as exc:
         console.print(f"[bold red]Erreur lors de l'export :[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -243,7 +291,6 @@ def search(
     console.print("\n[bold green]Export terminé :[/bold green]")
     for path in exported_paths:
         console.print(f"  • {path}")
-
 
 def _validate_choices(label: str, values: list[str], allowed: set[str]) -> None:
     invalid = set(values) - allowed
@@ -315,6 +362,7 @@ def _print_summary_table(restaurants: list[Restaurant]) -> None:
     table.add_column("Catégorie")
     table.add_column("Ville")
     table.add_column("Instagram", style="magenta")
+    table.add_column("Confiance")
 
     preview_count = min(len(restaurants), 15)
     for restaurant in restaurants[:preview_count]:
@@ -323,6 +371,7 @@ def _print_summary_table(restaurants: list[Restaurant]) -> None:
             restaurant.category,
             restaurant.city,
             restaurant.instagram_handle or "—",
+            restaurant.instagram_confidence.value if restaurant.instagram_confidence else "—",
         )
 
     console.print(table)
