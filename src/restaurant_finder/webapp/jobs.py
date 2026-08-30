@@ -190,7 +190,7 @@ class JobManager:
             job.status = "done"
             job.message = f"{len(restaurants)} établissement(s) trouvé(s)."
             if to_review:
-                job.message += f" ({len(to_review)} Instagram Faible → a_verifier)."
+                job.message += f" ({len(to_review)} Instagram Moyen/Faible → a_verifier)."
         except RestaurantFinderError as exc:
             job.status = "error"
             job.error = str(exc)

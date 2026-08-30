@@ -5,7 +5,7 @@ Outil en ligne de commande qui recherche automatiquement les restaurants
 **OpenStreetMap**, tente de retrouver le **profil Instagram officiel** de
 chaque établissement, puis exporte le résultat en **CSV** et **Excel**.
 
-Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`, `Confiance` (`Élevé` / `Moyen`). Les associations Instagram notées `Faible` sont exclues du fichier principal et enregistrées dans `output/a_verifier.csv` pour revue manuelle.
+Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`, `Confiance` (`Élevé` uniquement dans le fichier principal). Les associations Instagram notées `Moyen` ou `Faible` sont exclues du fichier principal et enregistrées dans `output/a_verifier.csv` pour revue manuelle.
 
 ## Sommaire
 
@@ -208,8 +208,9 @@ personnalisée.
 
 Les comptes Instagram avec **1000 followers ou plus** sont aussi exclus (seuil
 réglable via `--max-followers`). Chaque association Instagram porte un niveau
-de confiance (`Élevé` / `Moyen` / `Faible`) : les `Faible` partent dans
-`a_verifier.csv` plutôt que dans l'export principal.
+de confiance (`Élevé` / `Moyen` / `Faible`) : seuls les `Élevé` restent
+dans l'export principal ; `Moyen` et `Faible` partent dans
+`a_verifier.csv`.
 
 Équivalent sans installation du script : `python -m restaurant_finder search "Lyon"`.
 

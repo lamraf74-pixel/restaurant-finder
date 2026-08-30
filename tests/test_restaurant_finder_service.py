@@ -144,7 +144,7 @@ def test_find_restaurants_excludes_non_empty_brand_by_default() -> None:
     assert [r.name for r in restaurants] == ["Indépendant"]
 
 
-def test_split_by_instagram_confidence_moves_faible_aside() -> None:
+def test_split_by_instagram_confidence_keeps_only_eleve_in_main() -> None:
     from restaurant_finder.domain.models import InstagramConfidence
 
     eleve = Restaurant(
@@ -154,19 +154,35 @@ def test_split_by_instagram_confidence_moves_faible_aside() -> None:
         instagram_url="https://www.instagram.com/a/",
         instagram_confidence=InstagramConfidence.ELEVE,
     )
-    faible = Restaurant(
+    moyen = Restaurant(
         osm_id="node/2",
         name="B",
         category="Restaurant",
         instagram_url="https://www.instagram.com/b/",
+        instagram_confidence=InstagramConfidence.MOYEN,
+    )
+    faible = Restaurant(
+        osm_id="node/3",
+        name="C",
+        category="Restaurant",
+        instagram_url="https://www.instagram.com/c/",
         instagram_confidence=InstagramConfidence.FAIBLE,
     )
+    sans_ig = Restaurant(osm_id="node/4", name="D", category="Restaurant")
 
-    trusted, to_review = RestaurantFinderService.split_by_instagram_confidence([eleve, faible])
+    trusted, to_review = RestaurantFinderService.split_by_instagram_confidence(
+        [eleve, moyen, faible, sans_ig]
+    )
 
-    assert [r.name for r in trusted] == ["A", "B"]
+    assert [r.name for r in trusted] == ["A", "B", "C", "D"]
+    assert trusted[0].instagram_url == "https://www.instagram.com/a/"
+    assert trusted[0].instagram_confidence == InstagramConfidence.ELEVE
     assert trusted[1].instagram_url is None
     assert trusted[1].instagram_confidence is None
-    assert len(to_review) == 1
+    assert trusted[2].instagram_url is None
+    assert trusted[3].instagram_url is None
+
+    assert [r.name for r in to_review] == ["B", "C"]
+    assert to_review[0].instagram_confidence == InstagramConfidence.MOYEN
+    assert to_review[1].instagram_confidence == InstagramConfidence.FAIBLE
     assert to_review[0].instagram_url == "https://www.instagram.com/b/"
-    assert to_review[0].instagram_confidence == InstagramConfidence.FAIBLE

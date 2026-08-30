@@ -229,20 +229,21 @@ class RestaurantFinderService:
     def split_by_instagram_confidence(
         restaurants: list[Restaurant],
     ) -> tuple[list[Restaurant], list[Restaurant]]:
-        """Sépare les résultats principaux des associations Instagram Faible.
+        """Sépare les résultats principaux des associations à revoir manuellement.
 
-        - **Principaux** : sans Instagram, ou confiance Élevé / Moyen.
-          Les Instagram Faible sont retirés (URL / confiance vidées) pour
-          l'export principal.
-        - **À vérifier** : établissements dont l'Instagram est noté Faible
-          (copie avec l'association intacte).
+        - **Principaux** : sans Instagram, ou confiance **Élevé** uniquement.
+          Les Instagram Moyen / Faible sont retirés (URL / confiance vidées)
+          pour l'export principal.
+        - **À vérifier** : établissements dont l'Instagram est noté Moyen ou
+          Faible (copie avec l'association intacte → ``a_verifier.csv``).
         """
 
         trusted: list[Restaurant] = []
         to_review: list[Restaurant] = []
+        review_levels = {InstagramConfidence.MOYEN, InstagramConfidence.FAIBLE}
 
         for restaurant in restaurants:
-            if restaurant.instagram_confidence == InstagramConfidence.FAIBLE:
+            if restaurant.instagram_confidence in review_levels:
                 to_review.append(restaurant.model_copy(deep=True))
                 cleaned = restaurant.model_copy(deep=True)
                 cleaned.instagram_url = None

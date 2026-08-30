@@ -149,9 +149,10 @@ def search(
 ) -> None:
     """Recherche les restaurants d'une ville et exporte les résultats en CSV/Excel.
 
-    Les associations Instagram de confiance Faible sont exclues du fichier
-    principal et sauvegardées dans ``a_verifier.csv`` (même dossier que
-    ``--output``) pour vérification manuelle.
+    Seules les associations Instagram de confiance Élevé restent dans le
+    fichier principal. Moyen et Faible sont sauvegardées dans
+    ``a_verifier.csv`` (même dossier que ``--output``) pour vérification
+    manuelle.
     """
 
     setup_logging(verbose=verbose)
@@ -210,7 +211,7 @@ def search(
     if not no_instagram:
         console.print(
             f"[dim]Filtre Instagram : moins de {max_followers} followers ; "
-            f"confiance Faible → output/a_verifier.csv.[/dim]"
+            f"confiance Moyen/Faible → output/a_verifier.csv.[/dim]"
         )
 
     try:
@@ -250,7 +251,7 @@ def search(
         )
         if to_review:
             console.print(
-                f"[yellow]{len(to_review)} association(s) Instagram Faible "
+                f"[yellow]{len(to_review)} association(s) Instagram Moyen/Faible "
                 f"écartée(s) du fichier principal → a_verifier.csv.[/yellow]"
             )
 
@@ -264,7 +265,7 @@ def search(
             if restaurants:
                 console.print(
                     f"[green]Export filtré : {len(restaurants)} établissement(s) "
-                    f"avec Instagram (Élevé/Moyen).[/green]"
+                    f"avec Instagram (Élevé).[/green]"
                 )
     else:
         to_review = []
