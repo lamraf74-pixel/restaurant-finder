@@ -10,7 +10,7 @@ from __future__ import annotations
 from restaurant_finder.cache import FileCache
 from restaurant_finder.config import Settings
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
-from restaurant_finder.enrichment.instagram_followers import InstagramFollowerClient
+from restaurant_finder.enrichment.instagram_profile import InstagramProfileClient
 from restaurant_finder.enrichment.search_providers.ddgs_provider import DdgsSearchProvider
 from restaurant_finder.geocoding.location_parser import LocationInputParser
 from restaurant_finder.geocoding.nominatim_client import NominatimGeocoder
@@ -43,19 +43,24 @@ def build_service(settings: Settings, enable_instagram: bool = True) -> Restaura
     )
 
     instagram_finder: InstagramFinder | None = None
-    follower_client: InstagramFollowerClient | None = None
+    profile_client: InstagramProfileClient | None = None
     if enable_instagram and settings.instagram_search_enabled:
         # ddgs (sans clé API) : plus fiable que le scraping HTML DuckDuckGo.
         search_provider = DdgsSearchProvider(settings=settings)
+        # Même client (et même cache) pour la vérification du candidat et le
+        # comptage de followers : une seule requête réseau par compte, pas deux.
+        profile_client = InstagramProfileClient(settings=settings, cache=cache)
         instagram_finder = InstagramFinder(
-            search_provider=search_provider, settings=settings, cache=cache
+            search_provider=search_provider,
+            settings=settings,
+            profile_client=profile_client,
+            cache=cache,
+            http_session=session,
         )
-        if settings.instagram_filter_by_followers:
-            follower_client = InstagramFollowerClient(settings=settings, cache=cache)
 
     return RestaurantFinderService(
         source=source,
         settings=settings,
         instagram_finder=instagram_finder,
-        follower_client=follower_client,
+        follower_client=profile_client,
     )

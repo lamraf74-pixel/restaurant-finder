@@ -5,7 +5,7 @@ Outil en ligne de commande qui recherche automatiquement les restaurants
 **OpenStreetMap**, tente de retrouver le **profil Instagram officiel** de
 chaque établissement, puis exporte le résultat en **CSV** et **Excel**.
 
-Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`.
+Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`, `Confiance` (`Élevé` uniquement dans le fichier principal). Les associations Instagram notées `Moyen` ou `Faible` sont exclues du fichier principal et enregistrées dans `output/a_verifier.csv` pour revue manuelle.
 
 ## Sommaire
 
@@ -55,14 +55,16 @@ src/restaurant_finder/
 │   └── overpass_source.py       # Implémentation OpenStreetMap / Overpass (ville et/ou points)
 ├── enrichment/
 │   ├── matching.py               # Score de similarité nom ↔ résultat web (rapidfuzz)
+│   ├── confidence.py             # Classification Élevé / Moyen / Faible
 │   ├── instagram_normalize.py    # URL/handle Instagram <-> forme canonique
-│   ├── instagram_finder.py       # Orchestration de la recherche Instagram
-│   ├── instagram_followers.py    # Lecture du nombre de followers (filtre < N)
+│   ├── instagram_finder.py       # Recherche + vérification du candidat (anti faux-positifs)
+│   ├── instagram_profile.py      # Lecture du vrai profil (nom, bio, followers)
 │   └── search_providers/
 │       ├── base.py                # Interface SearchProvider
 │       └── ddgs_provider.py       # Implémentation via la librairie ddgs
 ├── filtering/
-│   └── chain_filter.py           # Exclusion des grandes enseignes / franchises
+│   ├── chain_filter.py           # Exclusion des chaînes (tag brand + enseignes connues)
+│   └── cuisine_filter.py         # Filtre sur le tag OSM cuisine
 ├── export/
 │   ├── base.py                   # Interface Exporter
 │   ├── csv_exporter.py
@@ -103,7 +105,7 @@ src/restaurant_finder/
 | Panel web | FastAPI + Leaflet (JS vanilla) | Aucune étape de build, carte gratuite (OSM), même `RestaurantFinderService` que la CLI |
 | Données restaurants | OpenStreetMap (Overpass API) | Gratuit, sans clé API, données ouvertes |
 | Géocodage | Nominatim | Service OSM officiel pour convertir un nom de ville en zone géographique |
-| Recherche Instagram | librairie `ddgs` + matching rapidfuzz | Gratuit, sans clé API ; bien plus fiable que le scraping HTML DuckDuckGo (souvent bloqué) |
+| Recherche Instagram | librairie `ddgs` + vérification du vrai profil | Gratuit, sans clé API ; les candidats sont vérifiés contre le nom complet / la bio réels du compte (pas seulement l'extrait de recherche), ce qui élimine la plupart des faux positifs |
 | Validation des données | Pydantic | Modèles typés et auto-validés, sérialisation simple |
 | Export | pandas + openpyxl | Un seul DataFrame, deux formats de sortie cohérents |
 | Configuration | pydantic-settings | Variables d'environnement / `.env` sans configuration manuelle |
@@ -164,8 +166,12 @@ restaurant-finder search "Marseille" --no-instagram
 # Uniquement les établissements avec un Instagram trouvé (cas d'usage principal)
 restaurant-finder search "Nice" --limit 50 --only-with-instagram --output output/nice_instagram
 
-# Inclure aussi les grandes enseignes (désactive le filtre franchises)
+# Inclure aussi les chaînes (tag OSM `brand` non vide + enseignes connues)
 restaurant-finder search "Nice" --include-chains --limit 20
+
+# Filtrer optionnellement par type de cuisine OSM (désactivé si omis)
+restaurant-finder search "Lyon" --cuisine "pizza,italian"
+restaurant-finder search "Lyon" --cuisine pizza,brunch
 
 # Logs détaillés (debug)
 restaurant-finder search "Nice" --verbose
@@ -190,9 +196,22 @@ Une URL Google Maps complète (copiée depuis la barre d'adresse, ou un lien cou
 
 `--near` est **répétable** : chaque lieu ajouté étend la zone de recherche. Les résultats de tous les lieux (et de la ville, si fournie) sont fusionnés et dédupliqués automatiquement. `--radius` (en mètres, 800 par défaut) s'applique à chaque `--near`.
 
-Par défaut, les **grandes enseignes / franchises** (McDo, Subway, Burger King, Starbucks, etc.) sont **exclues** avant la recherche Instagram, pour ne garder que les indépendants.
+Par défaut, les **chaînes** sont exclues : tout établissement OSM avec un tag
+`brand` non vide, ainsi que les enseignes connues détectées par nom
+(McDo, Subway, Burger King, Starbucks, etc.). Utilise `--include-chains` pour
+les conserver.
 
-Les comptes Instagram avec **1000 followers ou plus** sont aussi exclus (seuil réglable via `--max-followers`).
+Le filtre **cuisine** (tag OSM `cuisine`) est **optionnel** : sans
+`--cuisine`, tous les établissements sont conservés (hors chaînes). Avec
+`--cuisine "pizza,italian"`, seuls les tags listés sont gardés et les
+établissements **sans** tag cuisine sont exclus.
+
+Les comptes Instagram avec **1000 followers ou plus** sont aussi exclus (seuil
+réglable via `--max-followers`). Chaque association Instagram porte un niveau
+de confiance (`Élevé` / `Moyen` / `Faible`) : **Élevé** si le nom compacté
+correspond fortement au handle (égalité ou contenance) ; la ville n'est
+plus obligatoire (bonus seulement). Seuls les `Élevé` restent dans l'export
+principal ; `Moyen` et `Faible` partent dans `a_verifier.csv`.
 
 Équivalent sans installation du script : `python -m restaurant_finder search "Lyon"`.
 
@@ -206,16 +225,23 @@ préfixées par `RF_`, ou un fichier `.env` à la racine (voir
 
 - `RF_USER_AGENT` : identifiez-vous auprès de Nominatim (obligatoire selon leur politique d'usage).
 - `RF_INSTAGRAM_SEARCH_DELAY_SECONDS` : espacement minimal entre les recherches Instagram.
-- `RF_INSTAGRAM_MATCH_THRESHOLD` : seuil de confiance (0-100) pour valider un profil Instagram.
+- `RF_INSTAGRAM_MATCH_THRESHOLD` : seuil de confiance (0-100) exigé sur le vrai profil pour valider un candidat.
+- `RF_INSTAGRAM_MAX_PROFILE_CHECKS` : nombre max. de profils vérifiés par établissement (borne le coût réseau).
+- `RF_INSTAGRAM_UNCONFIRMED_CITY_PENALTY` : pénalité appliquée si la ville n'est confirmée ni dans le handle ni dans la bio.
 - `RF_CACHE_TTL_SECONDS` : durée de vie du cache local.
 
 ## Limites connues
 
-- **Recherche Instagram heuristique** : il n'existe pas d'API Instagram
-  officielle gratuite pour retrouver un compte à partir d'un nom. Le
-  logiciel utilise la recherche web (`ddgs`) + un matching flou. Le
-  taux de trouvaille est bon mais pas parfait (homonymes, comptes
-  absents, mauvais matching possible). L'option `--only-with-instagram`
+- **Recherche Instagram heuristique, mais vérifiée** : il n'existe pas
+  d'API Instagram officielle gratuite pour retrouver un compte à partir
+  d'un nom. Le logiciel cherche des candidats via le web (`ddgs`), puis
+  **vérifie chaque candidat contre son vrai profil** (nom complet +
+  biographie, pas seulement l'extrait de recherche) avant de le retenir.
+  Une pénalité supplémentaire s'applique si la ville du restaurant n'est
+  confirmée nulle part (cas des enseignes régionales au nom quasi
+  identique mais situées dans une autre ville). Le taux de trouvaille
+  reste bon mais pas parfait ; en cas de doute, aucun compte n'est
+  renvoyé plutôt qu'un mauvais candidat. L'option `--only-with-instagram`
   permet de n'exporter que les profils effectivement trouvés.
 - **Couverture des données** : dépend de la qualité du référencement
   OpenStreetMap sur la zone recherchée (certains établissements peuvent

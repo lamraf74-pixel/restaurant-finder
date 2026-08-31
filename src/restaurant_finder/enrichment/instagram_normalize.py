@@ -71,6 +71,33 @@ def extract_handle(value: str | None) -> str | None:
     return None
 
 
+def extract_handles_from_text(value: str | None) -> list[str]:
+    """Extrait tous les handles Instagram mentionnés dans un texte libre.
+
+    Utile pour les extraits de résultats de recherche où l'URL principale
+    n'est pas Instagram, mais le titre ou le snippet cite
+    ``instagram.com/nomcompte``.
+    """
+
+    if not value:
+        return []
+
+    handles: list[str] = []
+    seen: set[str] = set()
+    for match in _HANDLE_FROM_TEXT.finditer(value):
+        handle = match.group(1)
+        if handle.lower() in _RESERVED_PATH_SEGMENTS:
+            continue
+        if not _HANDLE_PATTERN.match(handle):
+            continue
+        key = handle.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        handles.append(handle)
+    return handles
+
+
 def to_profile_url(value: str | None) -> str | None:
     """Convertit une valeur Instagram quelconque en URL de profil canonique."""
 

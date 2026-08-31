@@ -49,14 +49,16 @@ def test_find_restaurants_parses_nodes_and_ways_and_skips_unnamed() -> None:
                         "addr:street": "Rue de la République",
                         "addr:postcode": "69001",
                         "addr:city": "Lyon",
+                        "cuisine": "bistro",
                         "contact:instagram": "https://www.instagram.com/lepetitbistrot/",
+                        "website": "https://lepetitbistrot.fr/",
                     },
                 },
                 {
                     "type": "way",
                     "id": 2,
                     "center": {"lat": 45.76, "lon": 4.86},
-                    "tags": {"name": "Café du Coin", "amenity": "cafe"},
+                    "tags": {"name": "Café du Coin", "amenity": "cafe", "cuisine": "cafe"},
                 },
                 {
                     "type": "node",
@@ -86,13 +88,15 @@ def test_find_restaurants_parses_nodes_and_ways_and_skips_unnamed() -> None:
     assert first.latitude == 45.75
     assert first.osm_id == "node/1"
     assert first.instagram_url == "https://www.instagram.com/lepetitbistrot/"
+    assert first.website == "https://lepetitbistrot.fr/"
+    assert first.cuisine == "bistro"
 
     second = restaurants[1]
     assert second.name == "Café du Coin"
     assert second.category == "Café"
     assert second.latitude == 45.76  # provient du champ "center" (way)
     assert second.city == "Lyon"  # ville de repli, faute de tag addr:city
-
+    assert second.cuisine == "cafe"
 
 @responses.activate
 def test_find_restaurants_returns_empty_list_when_nothing_found() -> None:

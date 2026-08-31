@@ -68,8 +68,21 @@ class Settings(BaseSettings):
     instagram_search_enabled: bool = True
     instagram_search_max_workers: int = 1
     instagram_search_delay_seconds: float = 1.0
-    instagram_match_threshold: int = 55  # score rapidfuzz (0-100)
+    # Timeout court pour le scraping du site web de l'établissement (ne doit
+    # pas ralentir le pipeline si le site est lent ou hors ligne).
+    instagram_website_timeout_seconds: float = 5.0
+    # Seuil de confiance final (score rapidfuzz 0-100), appliqué à la
+    # vérification du vrai profil Instagram (nom complet + biographie).
+    instagram_match_threshold: int = 62
     instagram_max_search_results: int = 10
+    # Nombre max. de profils Instagram vérifiés par établissement (borne le
+    # coût réseau : au-delà, les candidats restants sont de toute façon
+    # moins bien classés que ceux déjà écartés).
+    instagram_max_profile_checks: int = 3
+    # Pénalité appliquée quand la ville du restaurant n'est confirmée ni
+    # dans le handle ni dans la biographie (évite les enseignes régionales
+    # au nom quasi identique mais situées dans une autre ville).
+    instagram_unconfirmed_city_penalty: int = 25
     # Ne garder que les comptes avec strictement moins de N followers.
     instagram_max_followers: int = 1000
     instagram_filter_by_followers: bool = True

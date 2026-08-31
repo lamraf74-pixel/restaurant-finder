@@ -15,11 +15,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from restaurant_finder.config import Settings
-from restaurant_finder.domain.models import Restaurant
-from restaurant_finder.enrichment.instagram_finder import InstagramFinder
-from restaurant_finder.enrichment.instagram_followers import InstagramFollowerClient
+from restaurant_finder.domain.models import InstagramConfidence, Restaurant
+from restaurant_finder.enrichment.instagram_finder import InstagramFinder, InstagramMatch
+from restaurant_finder.enrichment.instagram_profile import InstagramProfileClient
 from restaurant_finder.export.base import Exporter
 from restaurant_finder.filtering.chain_filter import ChainRestaurantFilter
+from restaurant_finder.filtering.cuisine_filter import CuisineFilter, parse_cuisine_values
 from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.sources.base import RestaurantSource
 
@@ -37,14 +38,16 @@ class RestaurantFinderService:
         source: RestaurantSource,
         settings: Settings,
         instagram_finder: InstagramFinder | None = None,
-        follower_client: InstagramFollowerClient | None = None,
+        follower_client: InstagramProfileClient | None = None,
         chain_filter: ChainRestaurantFilter | None = None,
+        cuisine_filter: CuisineFilter | None = None,
     ) -> None:
         self._source = source
         self._settings = settings
         self._instagram_finder = instagram_finder
         self._follower_client = follower_client
         self._chain_filter = chain_filter or ChainRestaurantFilter()
+        self._cuisine_filter = cuisine_filter
 
     def find_restaurants(
         self,
@@ -54,6 +57,7 @@ class RestaurantFinderService:
         limit: int | None = None,
         enrich_instagram: bool = True,
         exclude_chains: bool = True,
+        cuisines: Sequence[str] | str | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> list[Restaurant]:
         """Exécute le pipeline complet et retourne la liste des restaurants.
@@ -63,6 +67,9 @@ class RestaurantFinderService:
         identifiant OSM. Ceci permet de combiner plusieurs villes et
         plusieurs lieux "pingués" (chacun avec son propre rayon) en une
         seule recherche étendue.
+
+        `cuisines` : liste optionnelle de valeurs du tag OSM `cuisine` à
+        conserver. Si omis (``None``), aucun filtre cuisine n'est appliqué.
         """
 
         if not cities and not near_points:
@@ -81,6 +88,17 @@ class RestaurantFinderService:
             )
         restaurants = self._dedupe_by_osm_id(restaurants)
 
+        cuisine_filter = self._resolve_cuisine_filter(cuisines)
+        if cuisine_filter is not None:
+            restaurants, cuisine_excluded = cuisine_filter.apply(restaurants)
+            if cuisine_excluded:
+                logger.info(
+                    "%d établissement(s) exclu(s) par filtre cuisine (%s) — %d restant(s).",
+                    cuisine_excluded,
+                    ", ".join(sorted(cuisine_filter.allowed)),
+                    len(restaurants),
+                )
+
         if exclude_chains:
             restaurants, excluded = self._chain_filter.exclude_chains(restaurants)
             if excluded:
@@ -97,6 +115,18 @@ class RestaurantFinderService:
             restaurants = self.enrich_with_instagram(restaurants, on_progress)
 
         return restaurants
+
+    def _resolve_cuisine_filter(
+        self, cuisines: Sequence[str] | str | None
+    ) -> CuisineFilter | None:
+        if cuisines is None:
+            return self._cuisine_filter
+        if isinstance(cuisines, str):
+            parsed = parse_cuisine_values(cuisines)
+            return CuisineFilter(parsed) if parsed else None
+        if not cuisines:
+            return None
+        return CuisineFilter(tuple(cuisines))
 
     @staticmethod
     def _dedupe_by_osm_id(restaurants: list[Restaurant]) -> list[Restaurant]:
@@ -135,9 +165,16 @@ class RestaurantFinderService:
             for future in as_completed(future_to_restaurant):
                 restaurant = future_to_restaurant[future]
                 try:
-                    url, followers = future.result()
-                    restaurant.instagram_url = url
-                    restaurant.instagram_followers = followers
+                    match, followers = future.result()
+                    if match is None:
+                        restaurant.instagram_url = None
+                        restaurant.instagram_confidence = None
+                        # Conservé quand le compte est exclu pour trop de followers.
+                        restaurant.instagram_followers = followers
+                    else:
+                        restaurant.instagram_url = match.url
+                        restaurant.instagram_confidence = match.confidence
+                        restaurant.instagram_followers = followers
                 except Exception:  # noqa: BLE001 - on ne bloque jamais le pipeline
                     logger.exception(
                         "Erreur inattendue lors de la recherche Instagram pour %r.",
@@ -145,6 +182,7 @@ class RestaurantFinderService:
                     )
                     restaurant.instagram_url = None
                     restaurant.instagram_followers = None
+                    restaurant.instagram_confidence = None
                 finally:
                     completed += 1
                     if on_progress is not None:
@@ -152,30 +190,32 @@ class RestaurantFinderService:
 
         return restaurants
 
-    def _resolve_instagram(self, restaurant: Restaurant) -> tuple[str | None, int | None]:
+    def _resolve_instagram(
+        self, restaurant: Restaurant
+    ) -> tuple[InstagramMatch | None, int | None]:
         assert self._instagram_finder is not None
-        url = self._instagram_finder.find(restaurant)
-        if url is None:
+        match = self._instagram_finder.find(restaurant)
+        if match is None:
             return None, None
 
         if (
             not self._settings.instagram_filter_by_followers
             or self._follower_client is None
         ):
-            return url, None
+            return match, None
 
-        followers = self._follower_client.get_follower_count(url)
+        followers = self._follower_client.get_follower_count(match.url)
         if followers is None:
             if self._settings.instagram_exclude_unknown_followers:
                 logger.info(
                     "Instagram @%s exclu : nombre de followers illisible.",
-                    extract_handle_safe(url),
+                    extract_handle_safe(match.url),
                 )
                 return None, None
-            return url, None
+            return match, None
 
         if followers >= self._settings.instagram_max_followers:
-            handle = extract_handle_safe(url)
+            handle = extract_handle_safe(match.url)
             logger.info(
                 "Instagram @%s exclu : %d followers (>= %d).",
                 handle,
@@ -184,7 +224,37 @@ class RestaurantFinderService:
             )
             return None, followers
 
-        return url, followers
+        return match, followers
+
+    @staticmethod
+    def split_by_instagram_confidence(
+        restaurants: list[Restaurant],
+    ) -> tuple[list[Restaurant], list[Restaurant]]:
+        """Sépare les résultats principaux des associations à revoir manuellement.
+
+        - **Principaux** : sans Instagram, ou confiance **Élevé** uniquement.
+          Les Instagram Moyen / Faible sont retirés (URL / confiance vidées)
+          pour l'export principal.
+        - **À vérifier** : établissements dont l'Instagram est noté Moyen ou
+          Faible (copie avec l'association intacte → ``a_verifier.csv``).
+        """
+
+        trusted: list[Restaurant] = []
+        to_review: list[Restaurant] = []
+        review_levels = {InstagramConfidence.MOYEN, InstagramConfidence.FAIBLE}
+
+        for restaurant in restaurants:
+            if restaurant.instagram_confidence in review_levels:
+                to_review.append(restaurant.model_copy(deep=True))
+                cleaned = restaurant.model_copy(deep=True)
+                cleaned.instagram_url = None
+                cleaned.instagram_followers = None
+                cleaned.instagram_confidence = None
+                trusted.append(cleaned)
+            else:
+                trusted.append(restaurant)
+
+        return trusted, to_review
 
     @staticmethod
     def export(

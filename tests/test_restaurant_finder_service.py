@@ -11,9 +11,10 @@ from restaurant_finder.services.restaurant_finder_service import RestaurantFinde
 from restaurant_finder.sources.base import RestaurantSource
 
 
-def _restaurant(osm_id: str, name: str) -> Restaurant:
-    return Restaurant(osm_id=osm_id, name=name, category="Restaurant", city="Nice")
-
+def _restaurant(osm_id: str, name: str, cuisine: str | None = None) -> Restaurant:
+    return Restaurant(
+        osm_id=osm_id, name=name, category="Restaurant", city="Nice", cuisine=cuisine
+    )
 
 class _RecordingSource(RestaurantSource):
     def __init__(
@@ -93,3 +94,106 @@ def test_find_restaurants_merges_and_dedupes_cities_and_points() -> None:
 
     names = sorted(r.name for r in restaurants)
     assert names == ["Doublon", "Uniquement point", "Uniquement ville"]
+
+
+def test_find_restaurants_does_not_filter_cuisine_by_default() -> None:
+    source = _RecordingSource(
+        by_city={
+            "Nice": [
+                _restaurant("node/1", "Pizza", cuisine="pizza"),
+                _restaurant("node/2", "Sushi", cuisine="sushi"),
+                _restaurant("node/3", "Sans tag", cuisine=None),
+            ]
+        }
+    )
+    service = RestaurantFinderService(source=source, settings=Settings())
+
+    restaurants = service.find_restaurants(cities=["Nice"], enrich_instagram=False)
+
+    assert [r.name for r in restaurants] == ["Pizza", "Sushi", "Sans tag"]
+
+
+def test_find_restaurants_filters_by_cuisine_when_requested() -> None:
+    source = _RecordingSource(
+        by_city={
+            "Nice": [
+                _restaurant("node/1", "Pizza", cuisine="pizza"),
+                _restaurant("node/2", "Sushi", cuisine="sushi"),
+                _restaurant("node/3", "Sans tag", cuisine=None),
+            ]
+        }
+    )
+    service = RestaurantFinderService(source=source, settings=Settings())
+
+    restaurants = service.find_restaurants(
+        cities=["Nice"], enrich_instagram=False, cuisines=("pizza",)
+    )
+
+    assert [r.name for r in restaurants] == ["Pizza"]
+
+
+def test_find_restaurants_excludes_non_empty_brand_by_default() -> None:
+    source = _RecordingSource(
+        by_city={
+            "Nice": [
+                _restaurant("node/1", "Indépendant"),
+                Restaurant(
+                    osm_id="node/2",
+                    name="Chaîne locale",
+                    category="Restaurant",
+                    city="Nice",
+                    cuisine="pizza",
+                    brand="Ma Franchise",
+                ),
+            ]
+        }
+    )
+    service = RestaurantFinderService(source=source, settings=Settings())
+
+    restaurants = service.find_restaurants(cities=["Nice"], enrich_instagram=False)
+
+    assert [r.name for r in restaurants] == ["Indépendant"]
+
+
+def test_split_by_instagram_confidence_keeps_only_eleve_in_main() -> None:
+    from restaurant_finder.domain.models import InstagramConfidence
+
+    eleve = Restaurant(
+        osm_id="node/1",
+        name="A",
+        category="Restaurant",
+        instagram_url="https://www.instagram.com/a/",
+        instagram_confidence=InstagramConfidence.ELEVE,
+    )
+    moyen = Restaurant(
+        osm_id="node/2",
+        name="B",
+        category="Restaurant",
+        instagram_url="https://www.instagram.com/b/",
+        instagram_confidence=InstagramConfidence.MOYEN,
+    )
+    faible = Restaurant(
+        osm_id="node/3",
+        name="C",
+        category="Restaurant",
+        instagram_url="https://www.instagram.com/c/",
+        instagram_confidence=InstagramConfidence.FAIBLE,
+    )
+    sans_ig = Restaurant(osm_id="node/4", name="D", category="Restaurant")
+
+    trusted, to_review = RestaurantFinderService.split_by_instagram_confidence(
+        [eleve, moyen, faible, sans_ig]
+    )
+
+    assert [r.name for r in trusted] == ["A", "B", "C", "D"]
+    assert trusted[0].instagram_url == "https://www.instagram.com/a/"
+    assert trusted[0].instagram_confidence == InstagramConfidence.ELEVE
+    assert trusted[1].instagram_url is None
+    assert trusted[1].instagram_confidence is None
+    assert trusted[2].instagram_url is None
+    assert trusted[3].instagram_url is None
+
+    assert [r.name for r in to_review] == ["B", "C"]
+    assert to_review[0].instagram_confidence == InstagramConfidence.MOYEN
+    assert to_review[1].instagram_confidence == InstagramConfidence.FAIBLE
+    assert to_review[0].instagram_url == "https://www.instagram.com/b/"
