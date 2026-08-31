@@ -51,6 +51,10 @@ class Restaurant(BaseModel):
         default=None,
         description="Tag OSM `cuisine` brut (peut contenir plusieurs valeurs séparées par `;`).",
     )
+    website: str | None = Field(
+        default=None,
+        description="Site web OSM (`website`) si renseigné.",
+    )
     instagram_url: str | None = None
     instagram_followers: int | None = Field(
         default=None,

@@ -55,6 +55,7 @@ def build_service(settings: Settings, enable_instagram: bool = True) -> Restaura
             settings=settings,
             profile_client=profile_client,
             cache=cache,
+            http_session=session,
         )
 
     return RestaurantFinderService(

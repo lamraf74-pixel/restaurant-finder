@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import requests
+import responses
+
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import InstagramConfidence, Restaurant
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder
@@ -122,6 +125,159 @@ def test_find_uses_osm_instagram_without_searching(sample_restaurant: Restaurant
     assert match.url == "https://www.instagram.com/lepetitbistrot/"
     assert match.confidence == InstagramConfidence.ELEVE
     assert provider.call_count == 0
+
+
+def test_find_osm_instagram_forces_eleve_even_when_handle_does_not_match_name() -> None:
+    """Tag OSM contact:instagram → Élevé forcé, indépendamment du nom du restaurant."""
+
+    restaurant = Restaurant(
+        osm_id="node/42",
+        name="La Table du Chef",
+        category="Restaurant",
+        city="Paris",
+        instagram_url="https://www.instagram.com/compte_sans_rapport/",
+    )
+    provider = _StubSearchProvider(
+        [
+            SearchResult(
+                title="La Table du Chef",
+                url="https://www.instagram.com/latableduchef/",
+            )
+        ]
+    )
+    finder = InstagramFinder(provider, _settings())
+
+    match = finder.find(restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/compte_sans_rapport/"
+    assert match.confidence == InstagramConfidence.ELEVE
+    assert provider.call_count == 0
+
+
+def test_find_scrapes_website_before_ddg(sample_restaurant: Restaurant) -> None:
+    sample_restaurant.website = "https://lepetitbistrot.fr/"
+    provider = _StubSearchProvider(
+        [
+            SearchResult(
+                title="Le Petit Bistrot",
+                url="https://www.instagram.com/autre_compte/",
+            )
+        ]
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.GET,
+            "https://lepetitbistrot.fr/",
+            body=(
+                '<html><body><a href="https://www.instagram.com/lepetitbistrot_site/">'
+                "Suivez-nous</a></body></html>"
+            ),
+            status=200,
+        )
+        finder = InstagramFinder(
+            provider,
+            _settings(),
+            http_session=requests.Session(),
+        )
+
+        match = finder.find(sample_restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot_site/"
+    assert match.confidence == InstagramConfidence.ELEVE
+    assert provider.call_count == 0
+
+
+def test_find_skips_website_when_osm_instagram_present(sample_restaurant: Restaurant) -> None:
+    sample_restaurant.instagram_url = "https://www.instagram.com/osm_handle/"
+    sample_restaurant.website = "https://lepetitbistrot.fr/"
+    provider = _StubSearchProvider([])
+
+    with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
+        rsps.add(
+            responses.GET,
+            "https://lepetitbistrot.fr/",
+            body=(
+                '<html><body><a href="https://www.instagram.com/site_handle/">'
+                "Instagram</a></body></html>"
+            ),
+            status=200,
+        )
+        finder = InstagramFinder(
+            provider,
+            _settings(),
+            http_session=requests.Session(),
+        )
+
+        match = finder.find(sample_restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/osm_handle/"
+    assert len(rsps.calls) == 0
+    assert provider.call_count == 0
+
+
+def test_find_falls_back_to_ddg_when_website_has_no_instagram(
+    sample_restaurant: Restaurant,
+) -> None:
+    sample_restaurant.website = "https://lepetitbistrot.fr/"
+    provider = _StubSearchProvider(
+        [
+            SearchResult(
+                title="Le Petit Bistrot",
+                url="https://www.instagram.com/lepetitbistrot/",
+            )
+        ]
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.GET,
+            "https://lepetitbistrot.fr/",
+            body="<html><body>Pas de réseaux sociaux</body></html>",
+            status=200,
+        )
+        finder = InstagramFinder(
+            provider,
+            _settings(),
+            http_session=requests.Session(),
+        )
+
+        match = finder.find(sample_restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert provider.call_count == 1
+
+
+def test_find_falls_back_to_ddg_when_website_is_unreachable(
+    sample_restaurant: Restaurant,
+) -> None:
+    sample_restaurant.website = "https://site-down.fr/"
+    provider = _StubSearchProvider(
+        [
+            SearchResult(
+                title="Le Petit Bistrot",
+                url="https://www.instagram.com/lepetitbistrot/",
+            )
+        ]
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.GET, "https://site-down.fr/", status=503)
+        finder = InstagramFinder(
+            provider,
+            _settings(),
+            http_session=requests.Session(),
+        )
+
+        match = finder.find(sample_restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert provider.call_count == 1
 
 
 def test_find_prefers_city_in_handle(sample_restaurant: Restaurant) -> None:

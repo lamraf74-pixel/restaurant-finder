@@ -25,6 +25,8 @@ import threading
 import time
 from typing import NamedTuple
 
+import requests
+
 from restaurant_finder.cache import FileCache
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import InstagramConfidence, Restaurant
@@ -37,6 +39,7 @@ from restaurant_finder.enrichment.instagram_normalize import (
 from restaurant_finder.enrichment.instagram_profile import InstagramProfile, InstagramProfileClient
 from restaurant_finder.enrichment.matching import score_candidate
 from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
+from restaurant_finder.enrichment.website_instagram import find_instagram_on_website
 from restaurant_finder.exceptions import SearchProviderError
 from restaurant_finder.utils.text import normalize_text
 
@@ -72,21 +75,28 @@ class InstagramFinder:
         settings: Settings,
         profile_client: InstagramProfileClient | None = None,
         cache: FileCache | None = None,
+        http_session: requests.Session | None = None,
     ) -> None:
         self._search_provider = search_provider
         self._settings = settings
         self._profile_client = profile_client
         self._cache = cache
+        self._http_session = http_session
         self._last_request_time: float = 0.0
         self._rate_limit_lock = threading.Lock()
 
     def find(self, restaurant: Restaurant) -> InstagramMatch | None:
         """Retourne le meilleur match Instagram, ou None si rien de plausible."""
 
-        # Déjà fourni par OSM (contact:instagram) : pas besoin de chercher.
+        # (1) Tag OSM contact:instagram — source fiable, confiance Élevé forcée.
         if restaurant.instagram_url:
             url = to_profile_url(restaurant.instagram_url) or restaurant.instagram_url
-            return self._match_from_known_url(restaurant, url)
+            return self._match_from_trusted_source(url)
+
+        # (2) Scraping du site web OSM si aucun Instagram trouvé à l'étape 1.
+        website_match = self._find_on_website(restaurant)
+        if website_match is not None:
+            return website_match
 
         cache_key = f"instagram:{restaurant.osm_id}:{restaurant.name}:{restaurant.city}"
         if self._cache is not None:
@@ -94,6 +104,7 @@ class InstagramFinder:
             if cached is not None:
                 return self._match_from_cache(restaurant, cached)
 
+        # (3) Cascade DuckDuckGo en dernier recours.
         result = self._search_instagram(restaurant)
 
         if self._cache is not None:
@@ -106,6 +117,31 @@ class InstagramFinder:
                 )
 
         return result
+
+    def _find_on_website(self, restaurant: Restaurant) -> InstagramMatch | None:
+        website = (restaurant.website or "").strip()
+        if not website or self._http_session is None:
+            return None
+
+        profile_url = find_instagram_on_website(
+            website,
+            session=self._http_session,
+            timeout=self._settings.instagram_website_timeout_seconds,
+        )
+        if profile_url is None:
+            return None
+
+        logger.info(
+            "Instagram trouvé sur le site web de %r : %s",
+            restaurant.name,
+            profile_url,
+        )
+        return self._match_from_trusted_source(profile_url)
+
+    def _match_from_trusted_source(self, url: str) -> InstagramMatch:
+        """Source directe (OSM ou site web) : confiance Élevé sans scoring."""
+
+        return InstagramMatch(url=url, confidence=InstagramConfidence.ELEVE)
 
     def _match_from_cache(
         self, restaurant: Restaurant, cached: object

@@ -51,6 +51,7 @@ def test_find_restaurants_parses_nodes_and_ways_and_skips_unnamed() -> None:
                         "addr:city": "Lyon",
                         "cuisine": "bistro",
                         "contact:instagram": "https://www.instagram.com/lepetitbistrot/",
+                        "website": "https://lepetitbistrot.fr/",
                     },
                 },
                 {
@@ -87,6 +88,7 @@ def test_find_restaurants_parses_nodes_and_ways_and_skips_unnamed() -> None:
     assert first.latitude == 45.75
     assert first.osm_id == "node/1"
     assert first.instagram_url == "https://www.instagram.com/lepetitbistrot/"
+    assert first.website == "https://lepetitbistrot.fr/"
     assert first.cuisine == "bistro"
 
     second = restaurants[1]

@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     instagram_search_enabled: bool = True
     instagram_search_max_workers: int = 1
     instagram_search_delay_seconds: float = 1.0
+    # Timeout court pour le scraping du site web de l'établissement (ne doit
+    # pas ralentir le pipeline si le site est lent ou hors ligne).
+    instagram_website_timeout_seconds: float = 5.0
     # Seuil de confiance final (score rapidfuzz 0-100), appliqué à la
     # vérification du vrai profil Instagram (nom complet + biographie).
     instagram_match_threshold: int = 62
