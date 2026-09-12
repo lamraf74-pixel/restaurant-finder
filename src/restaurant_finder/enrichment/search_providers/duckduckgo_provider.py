@@ -17,8 +17,15 @@ from bs4 import BeautifulSoup
 from restaurant_finder.config import Settings
 from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
 from restaurant_finder.exceptions import SearchProviderError
+from restaurant_finder.utils.retry import call_with_retry
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_NETWORK_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 _SEARCH_URL = "https://html.duckduckgo.com/html/"
 
@@ -45,11 +52,18 @@ class DuckDuckGoSearchProvider(SearchProvider):
 
     def search(self, query: str, max_results: int) -> list[SearchResult]:
         try:
-            response = self._session.post(
-                _SEARCH_URL,
-                data={"q": query},
-                headers=_BROWSER_HEADERS,
-                timeout=self._settings.request_timeout_seconds,
+            response = call_with_retry(
+                lambda: self._session.post(
+                    _SEARCH_URL,
+                    data={"q": query},
+                    headers=_BROWSER_HEADERS,
+                    timeout=self._settings.request_timeout_seconds,
+                ),
+                operation=f"Recherche DuckDuckGo {query!r}",
+                attempts=self._settings.retry_max_attempts,
+                base_delay=self._settings.retry_base_delay_seconds,
+                backoff_factor=self._settings.retry_backoff_factor,
+                retry_on=_TRANSIENT_NETWORK_ERRORS,
             )
             response.raise_for_status()
         except requests.RequestException as exc:

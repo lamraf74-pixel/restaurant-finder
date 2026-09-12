@@ -38,6 +38,25 @@ class Settings(BaseSettings):
     http_max_retries: int = 3
     http_backoff_factor: float = 1.0
 
+    # --- Fiabilité : retry applicatif ---
+    # Nombre d'essais (1 = pas de retry) et délai croissant (backoff exponentiel)
+    # appliqués à chaque appel réseau instable (Overpass, Nominatim, scraping de
+    # site web, DuckDuckGo, profil Instagram...). Ne s'applique qu'aux erreurs
+    # transitoires (timeout, connexion impossible), jamais aux réponses HTTP
+    # d'erreur déjà traitées explicitement par chaque couche.
+    retry_max_attempts: int = 3
+    retry_base_delay_seconds: float = 1.0
+    retry_backoff_factor: float = 2.0
+
+    # --- Fiabilité : logs fichier ---
+    # En plus de l'affichage console (Rich), toute exécution écrit un journal
+    # détaillé sur disque (niveau DEBUG, quel que soit --verbose), pour pouvoir
+    # comprendre un échec après coup sans avoir à relancer en mode debug.
+    log_file: Path = Path("restaurant-finder.log")
+    log_file_enabled: bool = True
+    log_file_max_bytes: int = 5_000_000
+    log_file_backup_count: int = 3
+
     # --- Geocoding (Nominatim) ---
     nominatim_base_url: str = "https://nominatim.openstreetmap.org"
     nominatim_rate_limit_seconds: float = 1.0

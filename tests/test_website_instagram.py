@@ -85,3 +85,50 @@ def test_find_instagram_on_website_returns_none_on_http_error() -> None:
     )
 
     assert result is None
+
+
+@responses.activate
+def test_find_instagram_on_website_retries_on_transient_connection_error() -> None:
+    responses.add(
+        responses.GET,
+        "https://flaky-site.fr/",
+        body=requests.exceptions.ConnectionError(),
+    )
+    responses.add(
+        responses.GET,
+        "https://flaky-site.fr/",
+        body='<html><body><a href="https://www.instagram.com/flaky_resto/">IG</a></body></html>',
+        status=200,
+    )
+
+    result = find_instagram_on_website(
+        "https://flaky-site.fr/",
+        session=requests.Session(),
+        timeout=5.0,
+        retry_attempts=2,
+        retry_base_delay=0,
+    )
+
+    assert result == "https://www.instagram.com/flaky_resto/"
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_find_instagram_on_website_gives_up_after_persistent_connection_errors() -> None:
+    for _ in range(2):
+        responses.add(
+            responses.GET,
+            "https://always-down.fr/",
+            body=requests.exceptions.ConnectionError(),
+        )
+
+    result = find_instagram_on_website(
+        "https://always-down.fr/",
+        session=requests.Session(),
+        timeout=5.0,
+        retry_attempts=2,
+        retry_base_delay=0,
+    )
+
+    assert result is None
+    assert len(responses.calls) == 2

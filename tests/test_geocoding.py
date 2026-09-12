@@ -95,3 +95,45 @@ def test_reverse_geocode_city_returns_none_when_unavailable() -> None:
 
     geocoder = NominatimGeocoder(session=requests.Session(), settings=settings)
     assert geocoder.reverse_geocode_city(43.7, 7.25) is None
+
+
+@responses.activate
+def test_geocode_city_retries_on_transient_connection_error_then_succeeds() -> None:
+    settings = Settings(nominatim_rate_limit_seconds=0, retry_base_delay_seconds=0)
+    responses.add(
+        responses.GET,
+        f"{settings.nominatim_base_url}/search",
+        body=requests.exceptions.ConnectionError(),
+    )
+    responses.add(
+        responses.GET,
+        f"{settings.nominatim_base_url}/search",
+        json=[{"boundingbox": ["45.7", "45.8", "4.8", "4.9"]}],
+        status=200,
+    )
+
+    geocoder = NominatimGeocoder(session=requests.Session(), settings=settings)
+    bbox = geocoder.geocode_city("Lyon")
+
+    assert bbox.south == 45.7
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_geocode_city_raises_geocoding_error_after_persistent_connection_errors() -> None:
+    settings = Settings(
+        nominatim_rate_limit_seconds=0, retry_base_delay_seconds=0, retry_max_attempts=2
+    )
+    for _ in range(2):
+        responses.add(
+            responses.GET,
+            f"{settings.nominatim_base_url}/search",
+            body=requests.exceptions.ConnectionError(),
+        )
+
+    geocoder = NominatimGeocoder(session=requests.Session(), settings=settings)
+
+    with pytest.raises(GeocodingError):
+        geocoder.geocode_city("Lyon")
+
+    assert len(responses.calls) == 2

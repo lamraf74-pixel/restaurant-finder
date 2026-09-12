@@ -8,6 +8,7 @@ sans modifier une seule ligne des autres couches.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import typer
@@ -25,6 +26,7 @@ from restaurant_finder.export.csv_exporter import CsvExporter
 from restaurant_finder.filtering.cuisine_filter import DEFAULT_CUISINES, parse_cuisine_values
 from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
+from restaurant_finder.utils.errors import describe_exception
 from restaurant_finder.utils.logging import setup_logging
 
 app = typer.Typer(
@@ -34,6 +36,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def _version_callback(value: bool) -> None:
@@ -144,6 +147,15 @@ def search(
             "Par défaut ces comptes sont exclus."
         ),
     ),
+    fresh: bool = typer.Option(
+        False,
+        "--fresh",
+        help=(
+            "Ignore toute progression sauvegardée d'une recherche précédente "
+            "interrompue (Ctrl+C, plantage) sur ce même lot d'établissements, "
+            "et repart de zéro plutôt que de reprendre où elle s'est arrêtée."
+        ),
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Active les logs détaillés (debug)."
     ),
@@ -154,9 +166,25 @@ def search(
     fichier principal. Moyen et Faible sont sauvegardées dans
     ``a_verifier.csv`` (même dossier que ``--output``) pour vérification
     manuelle.
+
+    Si la recherche est interrompue (Ctrl+C) ou plante à mi-chemin sur une
+    grande ville (ex : ``--limit 200``), relancer exactement la même
+    commande reprend où l'enrichissement Instagram s'était arrêté, sans
+    tout refaire depuis le début (utiliser ``--fresh`` pour ignorer cette
+    reprise et repartir de zéro).
     """
 
-    setup_logging(verbose=verbose)
+    settings = get_settings()
+    settings.instagram_max_followers = max_followers
+    settings.instagram_exclude_unknown_followers = not keep_unknown_followers
+
+    setup_logging(
+        verbose=verbose,
+        log_file=settings.log_file,
+        log_file_enabled=settings.log_file_enabled,
+        log_file_max_bytes=settings.log_file_max_bytes,
+        log_file_backup_count=settings.log_file_backup_count,
+    )
 
     if no_instagram and only_with_instagram:
         console.print(
@@ -175,10 +203,6 @@ def search(
     _validate_choices("catégorie", categories, allowed=set(DEFAULT_CATEGORY_LABELS))
     _validate_choices("format", formats, allowed=set(EXPORTERS))
 
-    settings = get_settings()
-    settings.instagram_max_followers = max_followers
-    settings.instagram_exclude_unknown_followers = not keep_unknown_followers
-
     near_points: list[PointQuery] = []
     if near:
         location_parser = build_location_parser(settings)
@@ -191,6 +215,76 @@ def search(
             near_points.append(PointQuery(latitude, longitude, radius))
 
     service = build_service(settings, enable_instagram=not no_instagram)
+    cuisine_values = parse_cuisine_values(cuisine)
+
+    # Filet de sécurité : à partir d'ici, toute erreur (réseau, Ctrl+C, bug
+    # inattendu) est attrapée proprement plutôt que de laisser une stack
+    # trace illisible s'afficher — voir chaque `except` ci-dessous.
+    try:
+        _run_search(
+            service=service,
+            city=city,
+            near_points=near_points,
+            radius=radius,
+            categories=categories,
+            limit=limit,
+            output=output,
+            formats=formats,
+            no_instagram=no_instagram,
+            only_with_instagram=only_with_instagram,
+            include_chains=include_chains,
+            cuisine_values=cuisine_values,
+            max_followers=max_followers,
+            resume=not fresh,
+        )
+    except typer.Exit:
+        raise
+    except KeyboardInterrupt:
+        console.print(
+            "\n[yellow]Recherche interrompue (Ctrl+C).[/yellow] "
+            "[dim]La progression Instagram déjà réalisée a été sauvegardée : "
+            "relance exactement la même commande pour reprendre là où tu "
+            "t'es arrêté (ou utilise --fresh pour repartir de zéro).[/dim]"
+        )
+        logger.warning("Recherche interrompue par l'utilisateur (Ctrl+C).")
+        raise typer.Exit(code=130) from None
+    except Exception as exc:  # noqa: BLE001 - dernier filet : jamais de stack trace à l'écran
+        # Message court sur la console (aucune trace) ; le détail complet
+        # (traceback) ne va que dans le fichier de log (toujours en DEBUG),
+        # sauf en mode --verbose où la console l'affiche aussi.
+        logger.error("Erreur inattendue pendant la recherche : %s", exc)
+        logger.debug("Détail de l'erreur inattendue :", exc_info=exc)
+        console.print(
+            f"[bold red]Erreur inattendue :[/bold red] {describe_exception(exc)} "
+            f"[dim](détails dans {settings.log_file})[/dim]"
+        )
+        raise typer.Exit(code=1) from None
+
+
+def _run_search(
+    *,
+    service: RestaurantFinderService,
+    city: str | None,
+    near_points: list[PointQuery],
+    radius: float,
+    categories: list[str],
+    limit: int | None,
+    output: Path,
+    formats: list[str],
+    no_instagram: bool,
+    only_with_instagram: bool,
+    include_chains: bool,
+    cuisine_values: tuple[str, ...] | None,
+    max_followers: int,
+    resume: bool,
+) -> None:
+    """Corps de la recherche (fetch, enrichissement, export).
+
+    Englobée par la gestion d'erreurs de `search()` (`RestaurantFinderError`
+    est encore traitée ici, au plus près du contexte, pour des messages
+    spécifiques ; `KeyboardInterrupt` et toute erreur inattendue remontent
+    jusqu'à `search()`).
+    """
 
     if city:
         console.print(f"[bold]Recherche des établissements à[/bold] [cyan]{city}[/cyan]...")
@@ -204,7 +298,6 @@ def search(
         console.print(
             "[dim]Filtre actif : chaînes exclues (tag OSM brand + enseignes connues).[/dim]"
         )
-    cuisine_values = parse_cuisine_values(cuisine)
     if cuisine_values:
         console.print(
             f"[dim]Filtre cuisine : {', '.join(cuisine_values)} "
@@ -241,8 +334,9 @@ def search(
         else f"[green]{len(restaurants)} établissement(s) trouvé(s).[/green]"
     )
 
+    to_review: list[Restaurant] = []
     if not no_instagram:
-        restaurants = _enrich_with_progress(service, restaurants)
+        restaurants = _enrich_with_progress(service, restaurants, resume=resume)
         with_instagram = sum(1 for item in restaurants if item.instagram_url)
         console.print(
             f"[magenta]{with_instagram}/{len(restaurants)} profil(s) Instagram trouvé(s).[/magenta]"
@@ -269,8 +363,6 @@ def search(
                     f"[green]Export filtré : {len(restaurants)} établissement(s) "
                     f"avec Instagram (Élevé).[/green]"
                 )
-    else:
-        to_review = []
 
     if not restaurants and not to_review:
         console.print("[yellow]Aucun établissement à exporter.[/yellow]")
@@ -295,6 +387,7 @@ def search(
     for path in exported_paths:
         console.print(f"  • {path}")
 
+
 def _validate_choices(label: str, values: list[str], allowed: set[str]) -> None:
     invalid = set(values) - allowed
     if invalid:
@@ -304,7 +397,7 @@ def _validate_choices(label: str, values: list[str], allowed: set[str]) -> None:
 
 
 def _enrich_with_progress(
-    service: RestaurantFinderService, restaurants: list[Restaurant]
+    service: RestaurantFinderService, restaurants: list[Restaurant], resume: bool = True
 ) -> list[Restaurant]:
     with Progress(
         SpinnerColumn(),
@@ -317,9 +410,11 @@ def _enrich_with_progress(
         task_id = progress.add_task("Recherche des profils Instagram...", total=len(restaurants))
 
         def on_progress(done: int, total: int) -> None:
-            progress.update(task_id, completed=done)
+            progress.update(task_id, completed=done, total=total)
 
-        restaurants = service.enrich_with_instagram(restaurants, on_progress=on_progress)
+        restaurants = service.enrich_with_instagram(
+            restaurants, on_progress=on_progress, resume=resume
+        )
 
     return restaurants
 
@@ -344,9 +439,15 @@ def ui(
 
     from restaurant_finder.webapp.server import create_app
 
-    setup_logging(verbose=verbose)
-
     settings = get_settings()
+    setup_logging(
+        verbose=verbose,
+        log_file=settings.log_file,
+        log_file_enabled=settings.log_file_enabled,
+        log_file_max_bytes=settings.log_file_max_bytes,
+        log_file_backup_count=settings.log_file_backup_count,
+    )
+
     web_app = create_app(settings)
 
     url = f"http://{host}:{port}"

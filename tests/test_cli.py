@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
 from typer.testing import CliRunner
 
+import restaurant_finder.cli as cli_module
 from restaurant_finder.cli import app
+from restaurant_finder.domain.models import Restaurant
 
 runner = CliRunner()
 
@@ -59,3 +64,50 @@ def test_search_rejects_invalid_near_coordinates() -> None:
 
     assert result.exit_code == 1
     assert "invalide" in result.output.lower()
+
+
+def test_search_help_lists_fresh_flag() -> None:
+    result = runner.invoke(app, ["search", "--help"])
+
+    assert result.exit_code == 0
+    assert "--fresh" in result.output
+
+
+class _RaisingService:
+    """Simule un `RestaurantFinderService` dont la recherche échoue."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def find_restaurants(self, **kwargs: Any) -> list[Restaurant]:
+        raise self._error
+
+
+def test_search_handles_keyboard_interrupt_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_module, "build_service", lambda *a, **k: _RaisingService(KeyboardInterrupt())
+    )
+
+    result = runner.invoke(app, ["search", "Lyon"])
+
+    assert result.exit_code == 130
+    assert "Traceback" not in result.output
+    assert "interrompue" in result.output.lower()
+
+
+def test_search_handles_unexpected_exception_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "build_service",
+        lambda *a, **k: _RaisingService(RuntimeError("boom inattendu")),
+    )
+
+    result = runner.invoke(app, ["search", "Lyon"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "inattendue" in result.output.lower()

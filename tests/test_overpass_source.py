@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
 import requests
 import responses
 
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import BoundingBox
+from restaurant_finder.exceptions import RestaurantSourceError
 from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.sources.overpass_source import OverpassRestaurantSource
 
@@ -317,3 +319,130 @@ def test_find_restaurants_near_points_deduplicates_overlapping_points() -> None:
     )
 
     assert len(restaurants) == 1
+
+
+@responses.activate
+def test_find_restaurants_retries_on_transient_connection_error_then_succeeds() -> None:
+    settings = Settings(retry_base_delay_seconds=0, retry_max_attempts=2)
+    bbox = BoundingBox(south=45.7, north=45.8, west=4.8, east=4.9)
+    geocoder = _StubGeocoder(bbox)
+
+    responses.add(
+        responses.POST, settings.overpass_base_url, body=requests.exceptions.ConnectionError()
+    )
+    responses.add(
+        responses.POST,
+        settings.overpass_base_url,
+        json={
+            "osm3s": {"timestamp_osm_base": "2026-07-29T22:00:00Z"},
+            "elements": [
+                {
+                    "type": "node",
+                    "id": 1,
+                    "lat": 45.75,
+                    "lon": 4.85,
+                    "tags": {"name": "Résilient", "amenity": "restaurant"},
+                }
+            ],
+        },
+        status=200,
+    )
+
+    source = OverpassRestaurantSource(
+        session=requests.Session(), settings=settings, geocoder=geocoder
+    )
+
+    restaurants = source.find_restaurants("Lyon", categories=("restaurant",))
+
+    assert [r.name for r in restaurants] == ["Résilient"]
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_find_restaurants_raises_after_persistent_connection_errors_on_all_mirrors() -> None:
+    settings = Settings(
+        overpass_fallback_urls=("https://mirror-b.example/api/interpreter",),
+        retry_base_delay_seconds=0,
+        retry_max_attempts=2,
+    )
+    bbox = BoundingBox(south=45.7, north=45.8, west=4.8, east=4.9)
+    geocoder = _StubGeocoder(bbox)
+
+    for endpoint in (settings.overpass_base_url, *settings.overpass_fallback_urls):
+        for _ in range(2):
+            responses.add(
+                responses.POST, endpoint, body=requests.exceptions.ConnectionError()
+            )
+
+    source = OverpassRestaurantSource(
+        session=requests.Session(), settings=settings, geocoder=geocoder
+    )
+
+    with pytest.raises(RestaurantSourceError):
+        source.find_restaurants("Lyon", categories=("restaurant",))
+
+
+@responses.activate
+def test_find_restaurants_near_points_skips_failing_point_and_keeps_others() -> None:
+    settings = Settings(
+        overpass_fallback_urls=(),
+        overpass_busy_retry_seconds=0,
+        overpass_rate_limit_seconds=0,
+    )
+    geocoder = _StubGeocoder(BoundingBox(south=0, north=0, west=0, east=0))
+
+    # Point 1 : le miroir unique sature sur ses deux tentatives -> échec du point.
+    responses.add(responses.POST, settings.overpass_base_url, status=406)
+    responses.add(responses.POST, settings.overpass_base_url, status=406)
+    # Point 2 : réussit normalement.
+    responses.add(
+        responses.POST,
+        settings.overpass_base_url,
+        json={
+            "osm3s": {"timestamp_osm_base": "2026-07-29T22:00:00Z"},
+            "elements": [
+                {
+                    "type": "node",
+                    "id": 2,
+                    "lat": 44.0,
+                    "lon": 7.0,
+                    "tags": {"name": "Le Safari", "amenity": "restaurant"},
+                }
+            ],
+        },
+        status=200,
+    )
+
+    source = OverpassRestaurantSource(
+        session=requests.Session(), settings=settings, geocoder=geocoder
+    )
+
+    restaurants = source.find_restaurants_near_points(
+        points=[PointQuery(43.7, 7.27, 500), PointQuery(44.0, 7.0, 500)],
+        categories=("restaurant",),
+    )
+
+    assert [r.name for r in restaurants] == ["Le Safari"]
+
+
+@responses.activate
+def test_find_restaurants_near_points_raises_when_every_point_fails() -> None:
+    settings = Settings(
+        overpass_fallback_urls=(),
+        overpass_busy_retry_seconds=0,
+        overpass_rate_limit_seconds=0,
+    )
+    geocoder = _StubGeocoder(BoundingBox(south=0, north=0, west=0, east=0))
+
+    for _ in range(4):  # 2 points x 2 tentatives de saturation chacun.
+        responses.add(responses.POST, settings.overpass_base_url, status=406)
+
+    source = OverpassRestaurantSource(
+        session=requests.Session(), settings=settings, geocoder=geocoder
+    )
+
+    with pytest.raises(RestaurantSourceError):
+        source.find_restaurants_near_points(
+            points=[PointQuery(43.7, 7.27, 500), PointQuery(44.0, 7.0, 500)],
+            categories=("restaurant",),
+        )

@@ -49,7 +49,12 @@ def build_service(settings: Settings, enable_instagram: bool = True) -> Restaura
         search_provider = DdgsSearchProvider(settings=settings)
         # Même client (et même cache) pour la vérification du candidat et le
         # comptage de followers : une seule requête réseau par compte, pas deux.
-        profile_client = InstagramProfileClient(settings=settings, cache=cache)
+        # Session dédiée (même fabrique que `session`) : garantit le même
+        # comportement réseau homogène (User-Agent, retries de transport)
+        # que les autres clients, plutôt qu'une `requests.Session()` nue.
+        profile_client = InstagramProfileClient(
+            settings=settings, cache=cache, session=build_http_session(settings)
+        )
         instagram_finder = InstagramFinder(
             search_provider=search_provider,
             settings=settings,

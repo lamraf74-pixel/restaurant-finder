@@ -20,8 +20,15 @@ import requests
 
 from restaurant_finder.config import Settings
 from restaurant_finder.exceptions import LocationParsingError
+from restaurant_finder.utils.retry import call_with_retry
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_NETWORK_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 _PLAIN_COORDINATES = re.compile(
     r"^\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$"
@@ -94,10 +101,17 @@ class LocationInputParser:
         """Suit les redirections d'un lien court Google Maps pour révéler les coordonnées."""
 
         try:
-            response = self._session.get(
-                url,
-                timeout=self._settings.request_timeout_seconds,
-                allow_redirects=True,
+            response = call_with_retry(
+                lambda: self._session.get(
+                    url,
+                    timeout=self._settings.request_timeout_seconds,
+                    allow_redirects=True,
+                ),
+                operation=f"Résolution du lien {url!r}",
+                attempts=self._settings.retry_max_attempts,
+                base_delay=self._settings.retry_base_delay_seconds,
+                backoff_factor=self._settings.retry_backoff_factor,
+                retry_on=_TRANSIENT_NETWORK_ERRORS,
             )
         except requests.RequestException as exc:
             logger.debug("Résolution du lien %r échouée : %s", url, exc)
