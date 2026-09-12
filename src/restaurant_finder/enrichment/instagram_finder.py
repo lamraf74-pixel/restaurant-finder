@@ -127,6 +127,9 @@ class InstagramFinder:
             website,
             session=self._http_session,
             timeout=self._settings.instagram_website_timeout_seconds,
+            retry_attempts=self._settings.retry_max_attempts,
+            retry_base_delay=self._settings.retry_base_delay_seconds,
+            retry_backoff_factor=self._settings.retry_backoff_factor,
         )
         if profile_url is None:
             return None

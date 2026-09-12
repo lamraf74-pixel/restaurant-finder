@@ -16,6 +16,7 @@ from ddgs import DDGS
 from restaurant_finder.config import Settings
 from restaurant_finder.enrichment.search_providers.base import SearchProvider, SearchResult
 from restaurant_finder.exceptions import SearchProviderError
+from restaurant_finder.utils.retry import call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +29,21 @@ class DdgsSearchProvider(SearchProvider):
         self._lock = threading.Lock()
 
     def search(self, query: str, max_results: int) -> list[SearchResult]:
-        try:
+        def _do_search() -> list[dict]:
             # Un seul appel réseau à la fois : les backends publics sont sensibles
             # au parallélisme agressif et peuvent renvoyer des pages vides.
             with self._lock, DDGS() as client:
-                raw_results = list(client.text(query, max_results=max_results))
+                return list(client.text(query, max_results=max_results))
+
+        try:
+            raw_results = call_with_retry(
+                _do_search,
+                operation=f"Recherche ddgs {query!r}",
+                attempts=self._settings.retry_max_attempts,
+                base_delay=self._settings.retry_base_delay_seconds,
+                backoff_factor=self._settings.retry_backoff_factor,
+                retry_on=(Exception,),  # API tierce hétérogène : pas de type dédié fiable.
+            )
         except Exception as exc:  # noqa: BLE001 - API tierce hétérogène
             raise SearchProviderError(
                 f"Échec de la recherche ddgs pour {query!r}: {exc}"

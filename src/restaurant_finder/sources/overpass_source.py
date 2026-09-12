@@ -27,9 +27,20 @@ from restaurant_finder.geocoding.geo_math import (
 )
 from restaurant_finder.geocoding.nominatim_client import NominatimGeocoder
 from restaurant_finder.sources.base import RestaurantSource
+from restaurant_finder.utils.errors import log_and_continue
+from restaurant_finder.utils.retry import call_with_retry
 from restaurant_finder.utils.text import join_non_empty
 
 logger = logging.getLogger(__name__)
+
+#: Erreurs réseau transitoires : on retente sur le même miroir avant de
+#: basculer sur le suivant (ce basculement immédiat reste, lui, réservé aux
+#: réponses HTTP de saturation : 406/429/504, voir `_query_endpoint`).
+_TRANSIENT_NETWORK_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 _OVERPASS_QUERY_TEMPLATE = """
 [out:json][timeout:{timeout}];
@@ -72,28 +83,30 @@ class OverpassRestaurantSource(RestaurantSource):
         restaurants: list[Restaurant] = []
         seen_osm_ids: set[str] = set()
 
+        failed_points = 0
+        last_error: RestaurantSourceError | None = None
+
         for index, point in enumerate(points, start=1):
-            bbox = bbox_from_point(point.latitude, point.longitude, point.radius_meters)
             label = (
                 self._geocoder.reverse_geocode_city(point.latitude, point.longitude)
                 or f"Lieu {index}"
             )
 
-            found_here = 0
-            for restaurant in self._search_bbox(bbox, categories, fallback_city=label):
-                if restaurant.osm_id in seen_osm_ids:
-                    continue
-
-                if restaurant.latitude is not None and restaurant.longitude is not None:
-                    distance = haversine_distance_meters(
-                        point.latitude, point.longitude, restaurant.latitude, restaurant.longitude
-                    )
-                    if distance > point.radius_meters:
-                        continue
-
-                seen_osm_ids.add(restaurant.osm_id)
-                restaurants.append(restaurant)
-                found_here += 1
+            try:
+                bbox = bbox_from_point(point.latitude, point.longitude, point.radius_meters)
+                found_here = self._collect_point_restaurants(
+                    bbox, point, categories, label, seen_osm_ids, restaurants
+                )
+            except RestaurantSourceError as exc:
+                failed_points += 1
+                last_error = exc
+                log_and_continue(
+                    logger,
+                    subject=f"le point ({point.latitude:.5f}, {point.longitude:.5f}) [{label}]",
+                    action="la récupération des établissements",
+                    exc=exc,
+                )
+                continue
 
             logger.info(
                 "%d établissement(s) trouvé(s) autour de (%.5f, %.5f) [%s, rayon %.0fm].",
@@ -107,7 +120,41 @@ class OverpassRestaurantSource(RestaurantSource):
             if index < len(points):
                 time.sleep(self._settings.overpass_rate_limit_seconds)
 
+        if failed_points and failed_points == len(points):
+            # Tous les points ont échoué : ne pas faire comme si la recherche
+            # avait simplement retourné zéro résultat — l'utilisateur a besoin
+            # de savoir que c'est un échec réseau, pas une absence de résultat.
+            assert last_error is not None
+            raise last_error
+
         return restaurants
+
+    def _collect_point_restaurants(
+        self,
+        bbox: BoundingBox,
+        point: PointQuery,
+        categories: Sequence[str],
+        label: str,
+        seen_osm_ids: set[str],
+        restaurants: list[Restaurant],
+    ) -> int:
+        found_here = 0
+        for restaurant in self._search_bbox(bbox, categories, fallback_city=label):
+            if restaurant.osm_id in seen_osm_ids:
+                continue
+
+            if restaurant.latitude is not None and restaurant.longitude is not None:
+                distance = haversine_distance_meters(
+                    point.latitude, point.longitude, restaurant.latitude, restaurant.longitude
+                )
+                if distance > point.radius_meters:
+                    continue
+
+            seen_osm_ids.add(restaurant.osm_id)
+            restaurants.append(restaurant)
+            found_here += 1
+
+        return found_here
 
     def _search_bbox(
         self, bbox: BoundingBox, categories: Sequence[str], fallback_city: str
@@ -178,7 +225,14 @@ class OverpassRestaurantSource(RestaurantSource):
                 attempt,
                 attempts,
             )
-            response = self._session.post(endpoint, data={"data": query}, timeout=timeout)
+            response = call_with_retry(
+                lambda: self._session.post(endpoint, data={"data": query}, timeout=timeout),
+                operation=f"Requête Overpass sur {endpoint}",
+                attempts=self._settings.retry_max_attempts,
+                base_delay=self._settings.retry_base_delay_seconds,
+                backoff_factor=self._settings.retry_backoff_factor,
+                retry_on=_TRANSIENT_NETWORK_ERRORS,
+            )
 
             if response.status_code in {406, 429, 504} and attempt < attempts:
                 wait = self._settings.overpass_busy_retry_seconds

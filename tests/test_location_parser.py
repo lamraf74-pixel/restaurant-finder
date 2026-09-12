@@ -66,3 +66,37 @@ def test_resolves_short_link_redirect() -> None:
 
     parser = LocationInputParser(session=requests.Session(), settings=Settings())
     assert parser.parse(short_url) == (45.9, 6.1)
+
+
+@responses.activate
+def test_resolves_short_link_after_transient_connection_error() -> None:
+    short_url = "https://maps.app.goo.gl/AbCdEf"
+    resolved_url = "https://www.google.com/maps/place/@45.9,6.1,15z"
+
+    responses.add(responses.GET, short_url, body=requests.exceptions.ConnectionError())
+    responses.add(
+        responses.GET,
+        short_url,
+        status=302,
+        headers={"Location": resolved_url},
+    )
+    responses.add(responses.GET, resolved_url, status=200, body="ok")
+
+    settings = Settings(retry_base_delay_seconds=0, retry_max_attempts=3)
+    parser = LocationInputParser(session=requests.Session(), settings=settings)
+
+    assert parser.parse(short_url) == (45.9, 6.1)
+
+
+@responses.activate
+def test_short_link_resolution_gives_up_after_persistent_connection_errors() -> None:
+    short_url = "https://maps.app.goo.gl/Broken"
+
+    for _ in range(3):
+        responses.add(responses.GET, short_url, body=requests.exceptions.ConnectionError())
+
+    settings = Settings(retry_base_delay_seconds=0, retry_max_attempts=3)
+    parser = LocationInputParser(session=requests.Session(), settings=settings)
+
+    with pytest.raises(LocationParsingError):
+        parser.parse(short_url)

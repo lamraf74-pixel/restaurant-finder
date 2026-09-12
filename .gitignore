@@ -24,6 +24,8 @@ htmlcov/
 # Données générées par l'application
 .cache/
 output/
+restaurant-finder.log
+*.log
 
 # IDE
 .vscode/

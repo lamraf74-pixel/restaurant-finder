@@ -17,8 +17,17 @@ from restaurant_finder.cache import FileCache
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import BoundingBox
 from restaurant_finder.exceptions import GeocodingError
+from restaurant_finder.utils.retry import call_with_retry
 
 logger = logging.getLogger(__name__)
+
+#: Erreurs réseau transitoires : on retente, plutôt qu'une réponse HTTP
+#: d'erreur déjà obtenue (celle-ci est traitée telle quelle, sans retry).
+_TRANSIENT_NETWORK_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 
 class NominatimGeocoder:
@@ -61,10 +70,17 @@ class NominatimGeocoder:
         self._last_request_time = time.monotonic()
 
         try:
-            response = self._session.get(
-                f"{self._settings.nominatim_base_url}/search",
-                params={"city": city, "format": "jsonv2", "limit": "1"},
-                timeout=self._settings.request_timeout_seconds,
+            response = call_with_retry(
+                lambda: self._session.get(
+                    f"{self._settings.nominatim_base_url}/search",
+                    params={"city": city, "format": "jsonv2", "limit": "1"},
+                    timeout=self._settings.request_timeout_seconds,
+                ),
+                operation=f"Géocodage Nominatim de {city!r}",
+                attempts=self._settings.retry_max_attempts,
+                base_delay=self._settings.retry_base_delay_seconds,
+                backoff_factor=self._settings.retry_backoff_factor,
+                retry_on=_TRANSIENT_NETWORK_ERRORS,
             )
             response.raise_for_status()
             results = response.json()
@@ -104,15 +120,22 @@ class NominatimGeocoder:
         self._last_request_time = time.monotonic()
 
         try:
-            response = self._session.get(
-                f"{self._settings.nominatim_base_url}/reverse",
-                params={
-                    "lat": f"{latitude:.6f}",
-                    "lon": f"{longitude:.6f}",
-                    "format": "jsonv2",
-                    "zoom": "14",
-                },
-                timeout=self._settings.request_timeout_seconds,
+            response = call_with_retry(
+                lambda: self._session.get(
+                    f"{self._settings.nominatim_base_url}/reverse",
+                    params={
+                        "lat": f"{latitude:.6f}",
+                        "lon": f"{longitude:.6f}",
+                        "format": "jsonv2",
+                        "zoom": "14",
+                    },
+                    timeout=self._settings.request_timeout_seconds,
+                ),
+                operation=f"Reverse géocodage Nominatim ({latitude}, {longitude})",
+                attempts=self._settings.retry_max_attempts,
+                base_delay=self._settings.retry_base_delay_seconds,
+                backoff_factor=self._settings.retry_backoff_factor,
+                retry_on=_TRANSIENT_NETWORK_ERRORS,
             )
             response.raise_for_status()
             payload = response.json()

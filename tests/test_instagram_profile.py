@@ -88,6 +88,54 @@ def test_get_follower_count_delegates_to_get_profile() -> None:
 
 
 @responses.activate
+def test_get_profile_retries_on_transient_connection_error_then_succeeds() -> None:
+    settings = Settings(
+        instagram_followers_delay_seconds=0, retry_base_delay_seconds=0, retry_max_attempts=2
+    )
+    responses.add(responses.GET, "https://www.instagram.com/", body="ok", status=200)
+    responses.add(
+        responses.GET,
+        "https://www.instagram.com/petitbistrot/",
+        body=requests.exceptions.ConnectionError(),
+    )
+    responses.add(
+        responses.GET,
+        "https://www.instagram.com/petitbistrot/",
+        body=_PROFILE_HTML.format(
+            full_name="Le Petit Bistrot",
+            biography="Restaurant familial a Lyon",
+            is_private="false",
+            followers=420,
+            handle="petitbistrot",
+        ),
+        status=200,
+    )
+
+    client = InstagramProfileClient(settings=settings, session=requests.Session())
+    profile = client.get_profile("https://www.instagram.com/petitbistrot/")
+
+    assert profile is not None
+    assert profile.follower_count == 420
+
+
+@responses.activate
+def test_get_profile_returns_none_after_persistent_connection_errors() -> None:
+    settings = Settings(
+        instagram_followers_delay_seconds=0, retry_base_delay_seconds=0, retry_max_attempts=2
+    )
+    responses.add(responses.GET, "https://www.instagram.com/", body="ok", status=200)
+    for _ in range(2):
+        responses.add(
+            responses.GET,
+            "https://www.instagram.com/introuvable/",
+            body=requests.exceptions.ConnectionError(),
+        )
+
+    client = InstagramProfileClient(settings=settings, session=requests.Session())
+    assert client.get_profile("introuvable") is None
+
+
+@responses.activate
 def test_get_profile_returns_none_when_page_unreadable() -> None:
     settings = Settings(instagram_followers_delay_seconds=0)
     responses.add(responses.GET, "https://www.instagram.com/", body="ok", status=200)
