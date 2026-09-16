@@ -23,17 +23,32 @@ class _StubService:
         return list(self._restaurants)
 
     def enrich_with_instagram(self, restaurants, on_progress=None):  # type: ignore[no-untyped-def]
+        from restaurant_finder.domain.models import InstagramConfidence
+
         if on_progress is not None:
             on_progress(len(restaurants), len(restaurants))
+        for restaurant in restaurants:
+            if not restaurant.instagram_url:
+                restaurant.instagram_url = "https://www.instagram.com/stub_compte/"
+            if restaurant.instagram_confidence is None:
+                restaurant.instagram_confidence = InstagramConfidence.ELEVE
         return restaurants
 
     @staticmethod
-    def split_by_instagram_confidence(restaurants):  # type: ignore[no-untyped-def]
+    def prepare_export_list(restaurants):  # type: ignore[no-untyped-def]
         from restaurant_finder.services.restaurant_finder_service import (
             RestaurantFinderService,
         )
 
-        return RestaurantFinderService.split_by_instagram_confidence(restaurants)
+        return RestaurantFinderService.prepare_export_list(restaurants)
+
+    @staticmethod
+    def keep_active_accounts(restaurants):  # type: ignore[no-untyped-def]
+        from restaurant_finder.services.restaurant_finder_service import (
+            RestaurantFinderService,
+        )
+
+        return RestaurantFinderService.keep_active_accounts(restaurants)
 
     @staticmethod
     def export(restaurants, exporters, destination):  # type: ignore[no-untyped-def]
@@ -136,3 +151,43 @@ def test_unknown_job_returns_404(tmp_path: Path) -> None:
     response = client.get("/api/jobs/does-not-exist")
 
     assert response.status_code == 404
+
+
+def test_search_passes_max_post_age_days_to_service_settings(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def factory(settings, enable_instagram):  # type: ignore[no-untyped-def]
+        captured["max_post_age_days"] = settings.instagram_max_post_age_days
+        captured["max_followers"] = settings.instagram_max_followers
+        return _StubService(_sample_restaurants())
+
+    app = create_app(Settings(), service_factory=factory, output_root=tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/search",
+        json={
+            "cities": ["Rennes"],
+            "formats": ["xlsx"],
+            "enrich_instagram": True,
+            "max_followers": 6000,
+            "max_post_age_days": 30,
+        },
+    )
+    assert response.status_code == 200
+    job = _wait_for_job(client, response.json()["job_id"])
+
+    assert job["status"] == "done"
+    assert captured["max_post_age_days"] == 30
+    assert captured["max_followers"] == 6000
+    assert "Actifs" in job["message"]
+    assert "activité ≤ 30j" in job["message"]
+
+
+def test_index_includes_default_activity_filter_and_cache_bust() -> None:
+    from pathlib import Path
+
+    html = Path("src/restaurant_finder/webapp/static/index.html").read_text(encoding="utf-8")
+    assert 'id="max-post-age-days-input"' in html
+    assert 'value="30"' in html
+    assert "app.js?v=5" in html

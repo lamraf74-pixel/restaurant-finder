@@ -19,7 +19,6 @@ from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.exceptions import RestaurantFinderError
 from restaurant_finder.export import EXPORTERS
-from restaurant_finder.export.csv_exporter import CsvExporter
 from restaurant_finder.filtering.cuisine_filter import parse_cuisine_values
 from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
@@ -29,6 +28,18 @@ logger = logging.getLogger(__name__)
 
 #: Fabrique de service injectable (facilite les tests avec un service stub).
 ServiceFactory = Callable[[Settings, bool], RestaurantFinderService]
+
+
+def _count_by_confidence(restaurants: list[Restaurant]) -> dict[str, int]:
+    """Compte les associations Instagram par niveau de confiance (ordre d'affichage)."""
+
+    counts: dict[str, int] = {}
+    for restaurant in restaurants:
+        if restaurant.instagram_confidence is None:
+            continue
+        label = restaurant.instagram_confidence.value
+        counts[label] = counts.get(label, 0) + 1
+    return counts
 
 
 @dataclass
@@ -54,6 +65,7 @@ class _Job:
                         if restaurant.instagram_confidence
                         else None
                     ),
+                    activity_status=restaurant.activity_status or None,
                     address=restaurant.address,
                     city=restaurant.city,
                     category=restaurant.category,
@@ -121,7 +133,15 @@ class JobManager:
                 update={
                     "instagram_max_followers": payload.max_followers,
                     "instagram_exclude_unknown_followers": not payload.keep_unknown_followers,
+                    "instagram_max_post_age_days": payload.max_post_age_days,
                 }
+            )
+            logger.info(
+                "Job %s : max_followers=%s keep_unknown_followers=%s max_post_age_days=%s",
+                job.job_id,
+                payload.max_followers,
+                payload.keep_unknown_followers,
+                payload.max_post_age_days,
             )
             service = self._service_factory(settings, payload.enrich_instagram)
 
@@ -148,7 +168,7 @@ class JobManager:
                 job.message = "Aucun établissement trouvé pour cette recherche."
                 return
 
-            to_review: list[Restaurant] = []
+            dropped_inactive = 0
             if payload.enrich_instagram:
                 job.status = "enriching"
                 job.progress_total = len(restaurants)
@@ -160,14 +180,21 @@ class JobManager:
                     job.message = f"Recherche des profils Instagram ({done}/{total})..."
 
                 restaurants = service.enrich_with_instagram(restaurants, on_progress=on_progress)
-                restaurants, to_review = service.split_by_instagram_confidence(restaurants)
+                restaurants = service.prepare_export_list(restaurants)
+                before_active = len(restaurants)
+                restaurants = service.keep_active_accounts(restaurants)
+                dropped_inactive = before_active - len(restaurants)
 
                 if payload.only_with_instagram:
                     restaurants = [r for r in restaurants if r.instagram_url]
 
-            if not restaurants and not to_review:
+            if not restaurants:
                 job.status = "done"
-                job.message = "Aucun établissement avec Instagram trouvé."
+                job.message = (
+                    "Aucun établissement avec Instagram actif trouvé."
+                    if payload.enrich_instagram
+                    else "Aucun établissement trouvé."
+                )
                 return
 
             job.status = "exporting"
@@ -175,22 +202,25 @@ class JobManager:
 
             destination = self._output_root / job.job_id / "resultats"
             exporters = [EXPORTERS[fmt] for fmt in payload.formats]
-            exported_paths = (
-                service.export(restaurants, exporters, destination) if restaurants else []
-            )
-            file_paths = dict(zip(payload.formats, exported_paths, strict=True))
-            if to_review:
-                review_path = CsvExporter().export(
-                    to_review, self._output_root / job.job_id / "a_verifier"
-                )
-                file_paths["a_verifier"] = review_path
-            job.file_paths = file_paths
+            exported_paths = service.export(restaurants, exporters, destination)
+            job.file_paths = dict(zip(payload.formats, exported_paths, strict=True))
 
             job.restaurants = restaurants
             job.status = "done"
-            job.message = f"{len(restaurants)} établissement(s) trouvé(s)."
-            if to_review:
-                job.message += f" ({len(to_review)} Instagram Moyen/Faible → a_verifier)."
+            job.message = f"{len(restaurants)} établissement(s) Actifs exporté(s)."
+            if payload.enrich_instagram:
+                parts: list[str] = []
+                if payload.max_post_age_days:
+                    parts.append(f"activité ≤ {payload.max_post_age_days}j")
+                if dropped_inactive:
+                    parts.append(f"{dropped_inactive} Inactifs écartés")
+                by_confidence = _count_by_confidence(restaurants)
+                if by_confidence:
+                    parts.append(
+                        ", ".join(f"{label}: {count}" for label, count in by_confidence.items())
+                    )
+                if parts:
+                    job.message += f" ({' ; '.join(parts)})."
         except RestaurantFinderError as exc:
             job.status = "error"
             job.error = str(exc)

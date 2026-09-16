@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 #: (évite de gaspiller une requête réseau sur un résultat déjà clairement hors sujet).
 _MIN_SHORTLIST_SCORE = 30
 #: Score minimal pour conserver un candidat non vérifié en confiance Faible
-#: (revue manuelle). En dessous : trop faible pour même figurer dans a_verifier.
+#: (export unique, trié en bas). En dessous : trop faible pour même figurer.
 _MIN_UNCERTAIN_SCORE = 50
 
 
@@ -345,7 +345,7 @@ class InstagramFinder:
             return self._best_by_text_only(restaurant, ranked, fallback_threshold)
 
         # Association incertaine : meilleur candidat textuel conservé en Faible
-        # pour revue manuelle (fichier a_verifier), plutôt qu'écarté silencieusement.
+        # dans l'export unique (trié en bas), plutôt qu'écarté silencieusement.
         return self._uncertain_match(restaurant, ranked)
 
     def _best_by_text_only(

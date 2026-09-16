@@ -22,7 +22,16 @@ class CsvExporter(Exporter):
 
         rows = [restaurant.to_export_row() for restaurant in restaurants]
         dataframe = pd.DataFrame(
-            rows, columns=["Nom", "Instagram", "Adresse", "Ville", "Catégorie", "Confiance"]
+            rows,
+            columns=[
+                "Nom",
+                "Instagram",
+                "Adresse",
+                "Ville",
+                "Catégorie",
+                "Confiance",
+                "Statut",
+            ],
         )
 
         try:

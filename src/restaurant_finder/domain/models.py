@@ -22,11 +22,29 @@ class BoundingBox(BaseModel):
 
 
 class InstagramConfidence(str, Enum):
-    """Niveau de confiance d'une association restaurant ↔ Instagram."""
+    """Niveau de confiance (ou motif d'exclusion) d'une association Instagram.
+
+    Élevé / Moyen / Faible : qualité du matching nom ↔ profil.
+    Inactif / Date illisible : motifs du filtre d'activité récente.
+
+    Toutes ces valeurs apparaissent dans l'export unique (CSV/Excel),
+    triées du plus fiable au moins fiable.
+    """
 
     ELEVE = "Élevé"
     MOYEN = "Moyen"
     FAIBLE = "Faible"
+    INACTIF = "Inactif"
+    DATE_ILLISIBLE = "Date illisible"
+
+
+#: Confiances issues du filtre d'activité récente → colonne Statut = Inactifs.
+_INACTIVE_CONFIDENCE_LEVELS = frozenset(
+    {
+        InstagramConfidence.INACTIF,
+        InstagramConfidence.DATE_ILLISIBLE,
+    }
+)
 
 
 class Restaurant(BaseModel):
@@ -74,12 +92,29 @@ class Restaurant(BaseModel):
 
         return extract_handle(self.instagram_url)
 
+    @property
+    def activity_status(self) -> str:
+        """Libellé Actifs / Inactifs pour l'export (colonne Statut).
+
+        - **Actifs** : association trouvée et non flaguée par le filtre d'activité
+          (Élevé / Moyen / Faible).
+        - **Inactifs** : Confiance Inactif ou Date illisible.
+        - Chaîne vide si aucun Instagram / aucune confiance.
+        """
+
+        if self.instagram_confidence is None:
+            return ""
+        if self.instagram_confidence in _INACTIVE_CONFIDENCE_LEVELS:
+            return "Inactifs"
+        return "Actifs"
+
     def to_export_row(self) -> dict[str, str]:
         """Convertit le restaurant en ligne prête pour l'export (CSV/Excel).
 
         Les noms de colonnes correspondent exactement au format de sortie
-        attendu : Nom, Instagram, Adresse, Ville, Catégorie, Confiance.
+        attendu : Nom, Instagram, Adresse, Ville, Catégorie, Confiance, Statut.
         La colonne Instagram contient le handle (ex: bistrot_le_cerey), pas l'URL.
+        Statut vaut Actifs (ex. Confiance Élevé) ou Inactifs (filtre d'activité).
         """
 
         return {
@@ -91,4 +126,5 @@ class Restaurant(BaseModel):
             "Confiance": (
                 self.instagram_confidence.value if self.instagram_confidence else ""
             ),
+            "Statut": self.activity_status,
         }

@@ -10,7 +10,15 @@ from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.export.csv_exporter import CsvExporter
 from restaurant_finder.export.excel_exporter import ExcelExporter
 
-_EXPECTED_COLUMNS = ["Nom", "Instagram", "Adresse", "Ville", "Catégorie", "Confiance"]
+_EXPECTED_COLUMNS = [
+    "Nom",
+    "Instagram",
+    "Adresse",
+    "Ville",
+    "Catégorie",
+    "Confiance",
+    "Statut",
+]
 
 
 def _sample_restaurants(sample_restaurant: Restaurant) -> list[Restaurant]:
@@ -26,7 +34,15 @@ def _sample_restaurants(sample_restaurant: Restaurant) -> list[Restaurant]:
         instagram_url="https://www.instagram.com/cafeducoin/",
         instagram_confidence=InstagramConfidence.MOYEN,
     )
-    return [sample_restaurant, other]
+    inactive = Restaurant(
+        osm_id="node/3",
+        name="Le Vieux Bar",
+        category="Bar",
+        city="Lyon",
+        instagram_url="https://www.instagram.com/vieuxbar/",
+        instagram_confidence=InstagramConfidence.INACTIF,
+    )
+    return [sample_restaurant, other, inactive]
 
 
 def test_csv_exporter_writes_expected_columns_and_adds_extension(
@@ -42,7 +58,11 @@ def test_csv_exporter_writes_expected_columns_and_adds_extension(
     assert dataframe.iloc[0]["Nom"] == sample_restaurant.name
     assert dataframe.iloc[1]["Instagram"] == "cafeducoin"
     assert dataframe.iloc[0]["Confiance"] == "Élevé"
+    assert dataframe.iloc[0]["Statut"] == "Actifs"
     assert dataframe.iloc[1]["Confiance"] == "Moyen"
+    assert dataframe.iloc[1]["Statut"] == "Actifs"
+    assert dataframe.iloc[2]["Confiance"] == "Inactif"
+    assert dataframe.iloc[2]["Statut"] == "Inactifs"
 
 
 def test_excel_exporter_writes_expected_columns_and_adds_extension(
