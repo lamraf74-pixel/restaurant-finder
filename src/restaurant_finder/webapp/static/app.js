@@ -98,6 +98,9 @@ async function loadDefaults() {
     if (defaults.max_followers) {
       document.getElementById("max-followers-input").value = defaults.max_followers;
     }
+    if (defaults.max_post_age_days) {
+      document.getElementById("max-post-age-days-input").value = defaults.max_post_age_days;
+    }
   } catch (error) {
     console.error("Impossible de charger les valeurs par défaut.", error);
   }
@@ -292,6 +295,14 @@ function collectPayload() {
     include_chains: document.getElementById("include-chains").checked,
     max_followers: Number(document.getElementById("max-followers-input").value) || 1000,
     keep_unknown_followers: document.getElementById("keep-unknown-followers").checked,
+    max_post_age_days: (() => {
+      const ageInput = document.getElementById("max-post-age-days-input");
+      if (!ageInput) return null;
+      const rawAge = String(ageInput.value || "").trim();
+      if (!rawAge) return null;
+      const parsed = Number(rawAge);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    })(),
   };
 }
 
@@ -416,6 +427,8 @@ function renderResults(jobId, job) {
       <td>${escapeHtml(row.name)}</td>
       <td>${row.instagram ? "@" + escapeHtml(row.instagram) : "—"}</td>
       <td>${row.instagram_followers ?? "—"}</td>
+      <td>${escapeHtml(row.instagram_confidence) || "—"}</td>
+      <td>${escapeHtml(row.activity_status) || "—"}</td>
       <td>${escapeHtml(row.city)}</td>
       <td>${escapeHtml(row.category)}</td>
     `;

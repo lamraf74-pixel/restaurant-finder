@@ -12,12 +12,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import InstagramConfidence, Restaurant
 from restaurant_finder.enrichment.instagram_finder import InstagramFinder, InstagramMatch
-from restaurant_finder.enrichment.instagram_profile import InstagramProfileClient
+from restaurant_finder.enrichment.instagram_profile import InstagramProfile, InstagramProfileClient
 from restaurant_finder.exceptions import RestaurantFinderError
 from restaurant_finder.export.base import Exporter
 from restaurant_finder.filtering.chain_filter import ChainRestaurantFilter
@@ -28,6 +29,17 @@ from restaurant_finder.sources.base import RestaurantSource
 from restaurant_finder.utils.errors import log_and_continue
 
 logger = logging.getLogger(__name__)
+
+#: Ordre d'affichage dans l'export unique (meilleur → moins fiable).
+#: Les établissements sans Instagram (``None``) passent en dernier.
+_CONFIDENCE_SORT_ORDER: dict[InstagramConfidence | None, int] = {
+    InstagramConfidence.ELEVE: 0,
+    InstagramConfidence.MOYEN: 1,
+    InstagramConfidence.FAIBLE: 2,
+    InstagramConfidence.INACTIF: 3,
+    InstagramConfidence.DATE_ILLISIBLE: 4,
+    None: 5,
+}
 
 #: Callback appelé après chaque restaurant enrichi : (fait, total).
 ProgressCallback = Callable[[int, int], None]
@@ -199,15 +211,16 @@ class RestaurantFinderService:
         on_progress: ProgressCallback | None = None,
         resume: bool = True,
     ) -> list[Restaurant]:
-        """Recherche Instagram, puis filtre selon le nombre de followers.
+        """Recherche Instagram, puis filtre selon followers et activité récente.
 
         Reprise après interruption : la progression (résultat Instagram par
         établissement) est sauvegardée sur disque après chaque établissement
         traité. Si un run précédent sur exactement le même lot de restaurants
-        (mêmes `osm_id`, mêmes réglages de filtre followers) a été interrompu
-        (Ctrl+C, plantage), les établissements déjà traités sont réappliqués
-        directement, sans nouvel appel réseau. `resume=False` (`--fresh`)
-        ignore et efface toute progression existante avant de démarrer.
+        (mêmes `osm_id`, mêmes réglages de filtre followers / activité) a été
+        interrompu (Ctrl+C, plantage), les établissements déjà traités sont
+        réappliqués directement, sans nouvel appel réseau. `resume=False`
+        (`--fresh`) ignore et efface toute progression existante avant de
+        démarrer.
         """
 
         if self._instagram_finder is None:
@@ -225,6 +238,7 @@ class RestaurantFinderService:
                 self._settings.instagram_filter_by_followers,
                 self._settings.instagram_exclude_unknown_followers,
                 self._settings.instagram_match_threshold,
+                self._settings.instagram_max_post_age_days,
             ),
         )
         saved = progress.load() if resume else {}
@@ -254,6 +268,13 @@ class RestaurantFinderService:
         if not pending:
             progress.clear()
             return restaurants
+
+        max_age_days = _activity_filter_days(self._settings)
+        if max_age_days is not None:
+            logger.info(
+                "Filtre d'activité Instagram actif : dernier post ≤ %d jour(s).",
+                max_age_days,
+            )
 
         max_workers = max(1, self._settings.instagram_search_max_workers)
         executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -321,63 +342,90 @@ class RestaurantFinderService:
         if match is None:
             return None, None
 
-        if (
-            not self._settings.instagram_filter_by_followers
-            or self._follower_client is None
-        ):
+        needs_profile = (
+            self._settings.instagram_filter_by_followers
+            or _activity_filter_days(self._settings) is not None
+        )
+        if not needs_profile or self._follower_client is None:
             return match, None
 
-        followers = self._follower_client.get_follower_count(match.url)
-        if followers is None:
-            if self._settings.instagram_exclude_unknown_followers:
+        profile = self._follower_client.get_profile(match.url)
+        followers = profile.follower_count if profile is not None else None
+
+        if self._settings.instagram_filter_by_followers:
+            if followers is None:
+                if self._settings.instagram_exclude_unknown_followers:
+                    logger.info(
+                        "Instagram @%s exclu : nombre de followers illisible.",
+                        extract_handle_safe(match.url),
+                    )
+                    return None, None
+            elif followers >= self._settings.instagram_max_followers:
+                handle = extract_handle_safe(match.url)
                 logger.info(
-                    "Instagram @%s exclu : nombre de followers illisible.",
-                    extract_handle_safe(match.url),
+                    "Instagram @%s exclu : %d followers (>= %d).",
+                    handle,
+                    followers,
+                    self._settings.instagram_max_followers,
                 )
-                return None, None
-            return match, None
+                return None, followers
 
-        if followers >= self._settings.instagram_max_followers:
-            handle = extract_handle_safe(match.url)
-            logger.info(
-                "Instagram @%s exclu : %d followers (>= %d).",
-                handle,
-                followers,
-                self._settings.instagram_max_followers,
-            )
-            return None, followers
-
+        match = self._apply_activity_filter(match, profile)
         return match, followers
 
-    @staticmethod
-    def split_by_instagram_confidence(
-        restaurants: list[Restaurant],
-    ) -> tuple[list[Restaurant], list[Restaurant]]:
-        """Sépare les résultats principaux des associations à revoir manuellement.
+    def _apply_activity_filter(
+        self, match: InstagramMatch, profile: InstagramProfile | None
+    ) -> InstagramMatch:
+        """Marque le match Inactif / Date illisible si le filtre d'activité s'applique."""
 
-        - **Principaux** : sans Instagram, ou confiance **Élevé** uniquement.
-          Les Instagram Moyen / Faible sont retirés (URL / confiance vidées)
-          pour l'export principal.
-        - **À vérifier** : établissements dont l'Instagram est noté Moyen ou
-          Faible (copie avec l'association intacte → ``a_verifier.csv``).
+        max_age_days = _activity_filter_days(self._settings)
+        if max_age_days is None:
+            return match
+
+        reason, confidence = activity_exclusion_reason(profile, max_age_days)
+        if reason is None or confidence is None:
+            return match
+
+        logger.info(
+            "Instagram @%s marqué pour revue manuelle (Confiance=%s) : %s",
+            extract_handle_safe(match.url),
+            confidence.value,
+            reason,
+        )
+        return InstagramMatch(url=match.url, confidence=confidence)
+
+    @staticmethod
+    def prepare_export_list(restaurants: list[Restaurant]) -> list[Restaurant]:
+        """Trie les résultats pour un export unique (CSV/Excel, une seule feuille).
+
+        Toutes les associations Instagram sont conservées avec leur vraie
+        confiance (Élevé, Moyen, Faible, Inactif, Date illisible). L'ordre
+        va du plus fiable au moins fiable ; sans Instagram en dernier.
+        L'ordre relatif est stable à niveau de confiance égal.
         """
 
-        trusted: list[Restaurant] = []
-        to_review: list[Restaurant] = []
-        review_levels = {InstagramConfidence.MOYEN, InstagramConfidence.FAIBLE}
+        indexed = list(enumerate(restaurants))
+        indexed.sort(
+            key=lambda item: (
+                _CONFIDENCE_SORT_ORDER.get(item[1].instagram_confidence, 5),
+                item[0],
+            )
+        )
+        return [restaurant for _, restaurant in indexed]
 
-        for restaurant in restaurants:
-            if restaurant.instagram_confidence in review_levels:
-                to_review.append(restaurant.model_copy(deep=True))
-                cleaned = restaurant.model_copy(deep=True)
-                cleaned.instagram_url = None
-                cleaned.instagram_followers = None
-                cleaned.instagram_confidence = None
-                trusted.append(cleaned)
-            else:
-                trusted.append(restaurant)
+    @staticmethod
+    def keep_active_accounts(restaurants: list[Restaurant]) -> list[Restaurant]:
+        """Ne conserve que les établissements au Statut ``Actifs``.
 
-        return trusted, to_review
+        Écarte les comptes ``Inactifs`` (Confiance Inactif / Date illisible)
+        ainsi que les établissements sans Instagram associé.
+        """
+
+        return [
+            restaurant
+            for restaurant in restaurants
+            if restaurant.activity_status == "Actifs"
+        ]
 
     @staticmethod
     def export(
@@ -442,3 +490,42 @@ def _apply_saved_instagram_fields(restaurant: Restaurant, fields: dict[str, obje
         )
     except ValueError:
         restaurant.instagram_confidence = None
+
+
+def _activity_filter_days(settings: Settings) -> int | None:
+    """Nombre de jours du filtre d'activité, ou None s'il est désactivé."""
+
+    days = settings.instagram_max_post_age_days
+    if days is None or days <= 0:
+        return None
+    return days
+
+
+def activity_exclusion_reason(
+    profile: InstagramProfile | None, max_age_days: int
+) -> tuple[str | None, InstagramConfidence | None]:
+    """Motif d'exclusion d'activité, ou ``(None, None)`` si le compte est assez récent.
+
+    Un compte sans aucun post est traité comme trop ancien (inactif).
+    Une date absente du HTML (mur de login, profil privé, JSON incomplet)
+    est un motif « Date illisible », pas un laissez-passer.
+    """
+
+    if profile is None:
+        return (
+            "date du dernier post illisible (profil inaccessible)",
+            InstagramConfidence.DATE_ILLISIBLE,
+        )
+    if profile.media_count == 0:
+        return ("aucun post (compte inactif)", InstagramConfidence.INACTIF)
+    if profile.last_post_at is None:
+        return ("date du dernier post illisible", InstagramConfidence.DATE_ILLISIBLE)
+
+    age = datetime.now(timezone.utc) - profile.last_post_at
+    if age > timedelta(days=max_age_days):
+        posted = profile.last_post_at.date().isoformat()
+        return (
+            f"dernier post trop ancien ({posted}, max {max_age_days} jour(s))",
+            InstagramConfidence.INACTIF,
+        )
+    return None, None

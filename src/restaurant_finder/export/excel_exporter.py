@@ -16,7 +16,8 @@ _COLUMN_WIDTHS = {
     "Adresse": 34,
     "Ville": 18,
     "Catégorie": 16,
-    "Confiance": 12,
+    "Confiance": 16,
+    "Statut": 12,
 }
 
 

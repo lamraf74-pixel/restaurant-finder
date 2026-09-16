@@ -35,7 +35,7 @@ def test_search_help_lists_cuisine_and_include_chains() -> None:
     assert "--cuisine" in result.output
     assert "--include-chains" in result.output
     assert "bistro" in result.output
-    assert "a_verifier" in result.output
+    assert "Confiance" in result.output or "confiance" in result.output.lower()
 
 
 def test_search_rejects_unknown_category() -> None:
@@ -71,6 +71,15 @@ def test_search_help_lists_fresh_flag() -> None:
 
     assert result.exit_code == 0
     assert "--fresh" in result.output
+
+
+def test_search_help_lists_max_post_age_days_and_opportunistic_warning() -> None:
+    result = runner.invoke(app, ["search", "--help"])
+
+    assert result.exit_code == 0
+    assert "--max-post-age-days" in result.output
+    assert "opportuniste" in result.output.lower()
+    assert "Inactif" in result.output or "Date illisible" in result.output
 
 
 class _RaisingService:

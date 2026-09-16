@@ -27,6 +27,7 @@ class SearchRequest(BaseModel):
     cuisine: str | None = None
     max_followers: int = 1000
     keep_unknown_followers: bool = False
+    max_post_age_days: int | None = None
 
 
 class ResultRow(BaseModel):
@@ -36,6 +37,7 @@ class ResultRow(BaseModel):
     instagram: str | None = None
     instagram_followers: int | None = None
     instagram_confidence: str | None = None
+    activity_status: str | None = None
     address: str
     city: str
     category: str

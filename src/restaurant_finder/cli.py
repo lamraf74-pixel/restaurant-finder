@@ -22,7 +22,6 @@ from restaurant_finder.config import DEFAULT_CATEGORY_LABELS, get_settings
 from restaurant_finder.domain.models import Restaurant
 from restaurant_finder.exceptions import LocationParsingError, RestaurantFinderError
 from restaurant_finder.export import EXPORTERS
-from restaurant_finder.export.csv_exporter import CsvExporter
 from restaurant_finder.filtering.cuisine_filter import DEFAULT_CUISINES, parse_cuisine_values
 from restaurant_finder.geocoding.geo_math import PointQuery
 from restaurant_finder.services.restaurant_finder_service import RestaurantFinderService
@@ -147,6 +146,19 @@ def search(
             "Par défaut ces comptes sont exclus."
         ),
     ),
+    max_post_age_days: int | None = typer.Option(
+        None,
+        "--max-post-age-days",
+        min=0,
+        help=(
+            "Marque les comptes Instagram dont le dernier post a plus de N jours "
+            "(ainsi que les comptes sans aucun post, ou dont la date est illisible) "
+            "avec Confiance = Inactif / Date illisible dans l'export unique. "
+            "Désactivé par défaut (0 désactive aussi). Filtre opportuniste : Instagram "
+            "n'expose pas toujours la date du dernier post dans la page publique, "
+            "ce n'est donc pas garanti sur 100 % des comptes."
+        ),
+    ),
     fresh: bool = typer.Option(
         False,
         "--fresh",
@@ -162,10 +174,15 @@ def search(
 ) -> None:
     """Recherche les restaurants d'une ville et exporte les résultats en CSV/Excel.
 
-    Seules les associations Instagram de confiance Élevé restent dans le
-    fichier principal. Moyen et Faible sont sauvegardées dans
-    ``a_verifier.csv`` (même dossier que ``--output``) pour vérification
-    manuelle.
+    Toutes les associations Instagram (Élevé, Moyen, Faible, Inactif,
+    Date illisible) sont d'abord classées, puis seuls les comptes au
+    Statut **Actifs** (Élevé / Moyen / Faible) sont écrits dans le fichier
+    d'export. Inactif et Date illisible sont écartés.
+
+    Le filtre ``--max-post-age-days`` (activité récente) est opportuniste :
+    il ne fonctionne que lorsque Instagram expose la date du dernier post
+    dans la page publique. Sinon le compte reste dans l'export avec
+    Confiance = « Date illisible ».
 
     Si la recherche est interrompue (Ctrl+C) ou plante à mi-chemin sur une
     grande ville (ex : ``--limit 200``), relancer exactement la même
@@ -177,6 +194,8 @@ def search(
     settings = get_settings()
     settings.instagram_max_followers = max_followers
     settings.instagram_exclude_unknown_followers = not keep_unknown_followers
+    if max_post_age_days is not None:
+        settings.instagram_max_post_age_days = max_post_age_days
 
     setup_logging(
         verbose=verbose,
@@ -235,6 +254,7 @@ def search(
             include_chains=include_chains,
             cuisine_values=cuisine_values,
             max_followers=max_followers,
+            max_post_age_days=settings.instagram_max_post_age_days,
             resume=not fresh,
         )
     except typer.Exit:
@@ -276,6 +296,7 @@ def _run_search(
     include_chains: bool,
     cuisine_values: tuple[str, ...] | None,
     max_followers: int,
+    max_post_age_days: int | None,
     resume: bool,
 ) -> None:
     """Corps de la recherche (fetch, enrichissement, export).
@@ -304,9 +325,15 @@ def _run_search(
             f"(sans tag cuisine -> exclu).[/dim]"
         )
     if not no_instagram:
+        activity_label = (
+            f"dernier post ≤ {max_post_age_days} jour(s) (filtre opportuniste) ; "
+            if max_post_age_days
+            else ""
+        )
         console.print(
             f"[dim]Filtre Instagram : moins de {max_followers} followers ; "
-            f"confiance Moyen/Faible -> output/a_verifier.csv.[/dim]"
+            f"{activity_label}"
+            "export unique trié par Confiance (Élevé → … → Date illisible).[/dim]"
         )
 
     try:
@@ -334,7 +361,6 @@ def _run_search(
         else f"[green]{len(restaurants)} établissement(s) trouvé(s).[/green]"
     )
 
-    to_review: list[Restaurant] = []
     if not no_instagram:
         restaurants = _enrich_with_progress(service, restaurants, resume=resume)
         with_instagram = sum(1 for item in restaurants if item.instagram_url)
@@ -342,43 +368,47 @@ def _run_search(
             f"[magenta]{with_instagram}/{len(restaurants)} profil(s) Instagram trouvé(s).[/magenta]"
         )
 
-        restaurants, to_review = RestaurantFinderService.split_by_instagram_confidence(
-            restaurants
-        )
-        if to_review:
+        restaurants = RestaurantFinderService.prepare_export_list(restaurants)
+        before_active = len(restaurants)
+        restaurants = RestaurantFinderService.keep_active_accounts(restaurants)
+        dropped_inactive = before_active - len(restaurants)
+        if dropped_inactive:
             console.print(
-                f"[yellow]{len(to_review)} association(s) Instagram Moyen/Faible "
-                f"écartée(s) du fichier principal -> a_verifier.csv.[/yellow]"
+                f"[yellow]{dropped_inactive} compte(s) Inactifs / sans Instagram "
+                f"écarté(s) — export des comptes Actifs uniquement.[/yellow]"
             )
 
         if only_with_instagram:
             restaurants = [item for item in restaurants if item.instagram_url]
-            if not restaurants and not to_review:
+            if not restaurants:
                 console.print(
-                    "[yellow]Aucun profil Instagram trouvé : rien à exporter.[/yellow]"
+                    "[yellow]Aucun profil Instagram actif trouvé : rien à exporter.[/yellow]"
                 )
                 raise typer.Exit(code=0)
-            if restaurants:
-                console.print(
-                    f"[green]Export filtré : {len(restaurants)} établissement(s) "
-                    f"avec Instagram (Élevé).[/green]"
-                )
+            console.print(
+                f"[green]Export filtré : {len(restaurants)} établissement(s) "
+                f"avec Instagram actif.[/green]"
+            )
+        elif not restaurants:
+            console.print(
+                "[yellow]Aucun compte Instagram actif à exporter.[/yellow]"
+            )
+            raise typer.Exit(code=0)
+        else:
+            console.print(
+                f"[green]{len(restaurants)} compte(s) Instagram Actifs "
+                f"conservé(s) pour l'export.[/green]"
+            )
 
-    if not restaurants and not to_review:
+    if not restaurants:
         console.print("[yellow]Aucun établissement à exporter.[/yellow]")
         raise typer.Exit(code=0)
 
-    if restaurants:
-        _print_summary_table(restaurants)
+    _print_summary_table(restaurants)
 
     exporters = [EXPORTERS[fmt] for fmt in formats]
     try:
-        exported_paths: list[Path] = []
-        if restaurants:
-            exported_paths.extend(service.export(restaurants, exporters, output))
-        if to_review:
-            review_path = output.parent / "a_verifier"
-            exported_paths.append(CsvExporter().export(to_review, review_path))
+        exported_paths = service.export(restaurants, exporters, output)
     except RestaurantFinderError as exc:
         console.print(f"[bold red]Erreur lors de l'export :[/bold red] {exc}")
         raise typer.Exit(code=1) from None

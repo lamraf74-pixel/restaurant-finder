@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     # Si le nombre de followers est illisible (blocage IG), exclure le compte.
     instagram_exclude_unknown_followers: bool = True
     instagram_followers_delay_seconds: float = 1.5
+    # Filtre d'activité récente, désactivé par défaut (None ou 0).
+    # Ex. 30 = ne garder que les comptes dont le dernier post a au plus 30 jours.
+    # Opportuniste : Instagram n'expose pas toujours cette date dans le HTML public.
+    # Les comptes trop anciens, sans post, ou à date illisible restent dans
+    # l'export unique avec Confiance = Inactif / Date illisible (triés en bas).
+    instagram_max_post_age_days: int | None = None
 
     # --- Cache ---
     cache_enabled: bool = True

@@ -5,7 +5,7 @@ Outil en ligne de commande qui recherche automatiquement les restaurants
 **OpenStreetMap**, tente de retrouver le **profil Instagram officiel** de
 chaque établissement, puis exporte le résultat en **CSV** et **Excel**.
 
-Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`, `Confiance` (`Élevé` uniquement dans le fichier principal). Les associations Instagram notées `Moyen` ou `Faible` sont exclues du fichier principal et enregistrées dans `output/a_verifier.csv` pour revue manuelle.
+Colonnes exportées : `Nom`, `Instagram` (handle uniquement, ex. `bistrot_le_cerey`), `Adresse`, `Ville`, `Catégorie`, `Confiance`, `Statut`. L'export final ne conserve que les comptes au Statut **Actifs** (Confiance Élevé / Moyen / Faible) : les **Inactifs** et **Date illisible** sont écartés du fichier.
 
 ## Sommaire
 
@@ -58,7 +58,7 @@ src/restaurant_finder/
 │   ├── confidence.py             # Classification Élevé / Moyen / Faible
 │   ├── instagram_normalize.py    # URL/handle Instagram <-> forme canonique
 │   ├── instagram_finder.py       # Recherche + vérification du candidat (anti faux-positifs)
-│   ├── instagram_profile.py      # Lecture du vrai profil (nom, bio, followers)
+│   ├── instagram_profile.py      # Lecture du vrai profil (nom, bio, followers, date du dernier post)
 │   └── search_providers/
 │       ├── base.py                # Interface SearchProvider
 │       └── ddgs_provider.py       # Implémentation via la librairie ddgs
@@ -206,12 +206,24 @@ Le filtre **cuisine** (tag OSM `cuisine`) est **optionnel** : sans
 `--cuisine "pizza,italian"`, seuls les tags listés sont gardés et les
 établissements **sans** tag cuisine sont exclus.
 
-Les comptes Instagram avec **1000 followers ou plus** sont aussi exclus (seuil
+Les comptes Instagram avec **1000 followers ou plus** sont exclus (seuil
 réglable via `--max-followers`). Chaque association Instagram porte un niveau
-de confiance (`Élevé` / `Moyen` / `Faible`) : **Élevé** si le nom compacté
-correspond fortement au handle (égalité ou contenance) ; la ville n'est
-plus obligatoire (bonus seulement). Seuls les `Élevé` restent dans l'export
-principal ; `Moyen` et `Faible` partent dans `a_verifier.csv`.
+de confiance (`Élevé` / `Moyen` / `Faible`) ou un motif d'activité
+(`Inactif` / `Date illisible`) : **Élevé** si le nom compacté correspond
+fortement au handle (égalité ou contenance) ; la ville n'est plus
+obligatoire (bonus seulement). **Toutes** ces lignes sont exportées dans
+**un seul** fichier (CSV et/ou Excel, une seule feuille), triées
+Élevé → Moyen → Faible → Inactif → Date illisible.
+
+Filtre d'activité récente **optionnel** (`--max-post-age-days 30`, ou
+`RF_INSTAGRAM_MAX_POST_AGE_DAYS`) : marque les comptes dont le **dernier
+post a plus de N jours** (ou sans post, ou date illisible) avec
+Confiance = `Inactif` / `Date illisible` dans le même export. Désactivé
+par défaut. **Ce filtre est opportuniste** : il ne peut fonctionner que
+lorsque le JSON embarqué de la page profil contient `taken_at_timestamp`,
+un id média `POLARIS_*` (date décodée depuis le snowflake), ou à défaut
+`latest_reel_media`. Ce n'est pas garanti sur 100 % des comptes
+(mur de login, profil privé, HTML modifié par Meta).
 
 Équivalent sans installation du script : `python -m restaurant_finder search "Lyon"`.
 
@@ -228,6 +240,7 @@ préfixées par `RF_`, ou un fichier `.env` à la racine (voir
 - `RF_INSTAGRAM_MATCH_THRESHOLD` : seuil de confiance (0-100) exigé sur le vrai profil pour valider un candidat.
 - `RF_INSTAGRAM_MAX_PROFILE_CHECKS` : nombre max. de profils vérifiés par établissement (borne le coût réseau).
 - `RF_INSTAGRAM_UNCONFIRMED_CITY_PENALTY` : pénalité appliquée si la ville n'est confirmée ni dans le handle ni dans la bio.
+- `RF_INSTAGRAM_MAX_POST_AGE_DAYS` : filtre d'activité récente (ex. `30`). Désactivé si omis. Opportuniste : Instagram n'expose pas toujours la date du dernier post.
 - `RF_CACHE_TTL_SECONDS` : durée de vie du cache local.
 
 ## Limites connues
@@ -243,6 +256,11 @@ préfixées par `RF_`, ou un fichier `.env` à la racine (voir
   reste bon mais pas parfait ; en cas de doute, aucun compte n'est
   renvoyé plutôt qu'un mauvais candidat. L'option `--only-with-instagram`
   permet de n'exporter que les profils effectivement trouvés.
+- **Filtre d'activité Instagram opportuniste** : `--max-post-age-days`
+  s'appuie sur le JSON public de la page profil (`taken_at_timestamp`,
+  id `POLARIS_*`, ou `latest_reel_media`). Instagram ne l'inclut pas
+  toujours (mur de login, compte privé). Dans ce cas le compte reste
+  dans l'export unique avec Confiance = `Date illisible` (trié en bas).
 - **Couverture des données** : dépend de la qualité du référencement
   OpenStreetMap sur la zone recherchée (certains établissements peuvent
   manquer ou avoir une adresse incomplète).

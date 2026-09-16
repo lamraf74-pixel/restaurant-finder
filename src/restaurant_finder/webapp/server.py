@@ -42,10 +42,11 @@ def create_app(
         return DEFAULT_CATEGORY_LABELS
 
     @app.get("/api/defaults")
-    def get_defaults() -> dict[str, float | int]:
+    def get_defaults() -> dict[str, float | int | None]:
         return {
             "radius_meters": settings.default_search_radius_meters,
             "max_followers": settings.instagram_max_followers,
+            "max_post_age_days": settings.instagram_max_post_age_days,
         }
 
     @app.post("/api/search")

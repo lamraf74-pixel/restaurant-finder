@@ -6,7 +6,7 @@
   <title>Restaurant Finder</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=5" />
 </head>
 <body>
   <div class="layout">
@@ -39,9 +39,9 @@
       <section class="card card--collapsible">
         <button id="toggle-options" class="card__toggle" type="button">
           <span>Options avancées</span>
-          <span id="toggle-icon">▸</span>
+          <span id="toggle-icon">▾</span>
         </button>
-        <div id="options-body" class="card__body collapsed">
+        <div id="options-body" class="card__body">
           <div class="field">
             <span class="field__label">Catégories</span>
             <div id="category-checkboxes" class="checkbox-grid"></div>
@@ -83,6 +83,15 @@
                 <input type="checkbox" id="keep-unknown-followers" />
                 <span>Garder les comptes dont les followers sont illisibles</span>
               </label>
+            </div>
+            <div class="field">
+              <label for="max-post-age-days-input">Âge max. du dernier post Instagram (jours)</label>
+              <input id="max-post-age-days-input" type="number" min="1" value="30" />
+              <p class="hint">
+                Par défaut 30 jours. L'Excel n'exporte que les comptes Actifs :
+                Inactifs et Date illisible sont écartés. Vide le champ pour
+                désactiver le contrôle d'âge du dernier post.
+              </p>
             </div>
           </div>
 
@@ -129,6 +138,8 @@
                 <th>Nom</th>
                 <th>Instagram</th>
                 <th>Followers</th>
+                <th>Confiance</th>
+                <th>Statut</th>
                 <th>Ville</th>
                 <th>Catégorie</th>
               </tr>
@@ -141,6 +152,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>
