@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 import requests
 import responses
@@ -28,6 +30,31 @@ def test_geocode_city_returns_bounding_box() -> None:
     assert bbox.north == 45.8
     assert bbox.west == 4.8
     assert bbox.east == 4.9
+
+    query = parse_qs(urlparse(responses.calls[0].request.url).query)
+    assert query.get("countrycodes") == ["fr"]
+    assert query.get("city") == ["Lyon"]
+
+
+@responses.activate
+def test_geocode_city_restricts_search_to_france() -> None:
+    """Les homonymes étrangers (Paris TX, Lyon BE) sont exclus via countrycodes=fr."""
+
+    settings = Settings(nominatim_rate_limit_seconds=0)
+    responses.add(
+        responses.GET,
+        f"{settings.nominatim_base_url}/search",
+        json=[{"boundingbox": ["48.8", "48.9", "2.2", "2.5"]}],
+        status=200,
+    )
+
+    geocoder = NominatimGeocoder(session=requests.Session(), settings=settings)
+    geocoder.geocode_city("Paris")
+
+    query = parse_qs(urlparse(responses.calls[0].request.url).query)
+    assert query["countrycodes"] == ["fr"]
+    assert query["format"] == ["jsonv2"]
+    assert query["limit"] == ["1"]
 
 
 @responses.activate

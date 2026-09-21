@@ -8,12 +8,15 @@ Trois niveaux (indépendants du score rapidfuzz numérique) :
 - **Moyen** : overlap partiel plausible (mots significatifs du nom dans le
   handle), sans contenance complète.
 - **Faible** : pas de correspondance claire, ou résidu de handle qui suggère
-  un autre établissement (ex. préfixe ``maison`` vs ``le``).
+  un autre établissement (ex. préfixe ``maison`` vs ``le``). Un signal de
+  localisation hors de France dans la bio (indicatif étranger, ville ou
+  pays) rabaisse aussi n'importe quel niveau vers Faible.
 """
 
 from __future__ import annotations
 
 from restaurant_finder.domain.models import InstagramConfidence
+from restaurant_finder.enrichment.foreign_location import location_suggests_foreign_country
 from restaurant_finder.utils.text import compact_text, normalize_text
 
 #: En dessous de cette longueur compacte, un nom est trop générique.
@@ -177,6 +180,27 @@ def classify_instagram_confidence(
 ) -> InstagramConfidence:
     """Classe une association Instagram selon les règles métier Élevé/Moyen/Faible."""
 
+    confidence = _classify_name_and_city(
+        restaurant_name, city, handle, full_name, biography
+    )
+    if confidence == InstagramConfidence.FAIBLE:
+        return confidence
+
+    location_text = f"{handle} {full_name} {biography}".strip()
+    if location_suggests_foreign_country(
+        location_text, restaurant_city=city, restaurant_name=restaurant_name
+    ):
+        return InstagramConfidence.FAIBLE
+    return confidence
+
+
+def _classify_name_and_city(
+    restaurant_name: str,
+    city: str,
+    handle: str,
+    full_name: str,
+    biography: str,
+) -> InstagramConfidence:
     if strong_name_handle_match(restaurant_name, handle):
         return InstagramConfidence.ELEVE
 

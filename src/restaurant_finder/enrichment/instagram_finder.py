@@ -31,6 +31,7 @@ from restaurant_finder.cache import FileCache
 from restaurant_finder.config import Settings
 from restaurant_finder.domain.models import InstagramConfidence, Restaurant
 from restaurant_finder.enrichment.confidence import classify_instagram_confidence
+from restaurant_finder.enrichment.foreign_location import location_suggests_foreign_country
 from restaurant_finder.enrichment.instagram_normalize import (
     extract_handle,
     extract_handles_from_text,
@@ -51,6 +52,9 @@ _MIN_SHORTLIST_SCORE = 30
 #: Score minimal pour conserver un candidat non vérifié en confiance Faible
 #: (export unique, trié en bas). En dessous : trop faible pour même figurer.
 _MIN_UNCERTAIN_SCORE = 50
+#: Incrémenter si le scoring / les signaux de confiance changent, pour ne
+#: pas rejouer un Élevé périmé (ex. bio étrangère désormais classée Faible).
+_INSTAGRAM_MATCH_CACHE_VERSION = "v2"
 
 
 class InstagramMatch(NamedTuple):
@@ -88,17 +92,21 @@ class InstagramFinder:
     def find(self, restaurant: Restaurant) -> InstagramMatch | None:
         """Retourne le meilleur match Instagram, ou None si rien de plausible."""
 
-        # (1) Tag OSM contact:instagram — source fiable, confiance Élevé forcée.
+        # (1) Tag OSM contact:instagram — source fiable, confiance Élevé forcée
+        # (sauf bio clairement située à l'étranger → Faible).
         if restaurant.instagram_url:
             url = to_profile_url(restaurant.instagram_url) or restaurant.instagram_url
-            return self._match_from_trusted_source(url)
+            return self._match_from_trusted_source(restaurant, url)
 
         # (2) Scraping du site web OSM si aucun Instagram trouvé à l'étape 1.
         website_match = self._find_on_website(restaurant)
         if website_match is not None:
             return website_match
 
-        cache_key = f"instagram:{restaurant.osm_id}:{restaurant.name}:{restaurant.city}"
+        cache_key = (
+            f"instagram:{_INSTAGRAM_MATCH_CACHE_VERSION}:"
+            f"{restaurant.osm_id}:{restaurant.name}:{restaurant.city}"
+        )
         if self._cache is not None:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -139,12 +147,23 @@ class InstagramFinder:
             restaurant.name,
             profile_url,
         )
-        return self._match_from_trusted_source(profile_url)
+        return self._match_from_trusted_source(restaurant, profile_url)
 
-    def _match_from_trusted_source(self, url: str) -> InstagramMatch:
-        """Source directe (OSM ou site web) : confiance Élevé sans scoring."""
+    def _match_from_trusted_source(self, restaurant: Restaurant, url: str) -> InstagramMatch:
+        """Source directe (OSM ou site web) : confiance Élevé, sauf bio étrangère."""
 
-        return InstagramMatch(url=url, confidence=InstagramConfidence.ELEVE)
+        confidence = InstagramConfidence.ELEVE
+        if self._profile_client is not None:
+            profile = self._profile_client.get_profile(url)
+            if profile is not None:
+                location_text = f"{profile.username} {profile.full_name} {profile.biography}"
+                if location_suggests_foreign_country(
+                    location_text,
+                    restaurant_city=restaurant.city,
+                    restaurant_name=restaurant.name,
+                ):
+                    confidence = InstagramConfidence.FAIBLE
+        return InstagramMatch(url=url, confidence=confidence)
 
     def _match_from_cache(
         self, restaurant: Restaurant, cached: object
