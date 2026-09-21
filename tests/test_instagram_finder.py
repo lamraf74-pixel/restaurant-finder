@@ -155,6 +155,36 @@ def test_find_osm_instagram_forces_eleve_even_when_handle_does_not_match_name() 
     assert provider.call_count == 0
 
 
+def test_find_osm_instagram_foreign_bio_is_faible() -> None:
+    """Tag OSM fiable, mais bio clairement espagnole → Faible pour revue."""
+
+    restaurant = Restaurant(
+        osm_id="node/42",
+        name="Le Petit Bistrot",
+        category="Restaurant",
+        city="Lyon",
+        instagram_url="https://www.instagram.com/lepetitbistrot/",
+    )
+    profiles = {
+        "lepetitbistrot": _profile(
+            "lepetitbistrot",
+            full_name="Le Petit Bistrot",
+            biography="Barcelona, España 🇪🇸 +34 932 000 000",
+        )
+    }
+    provider = _StubSearchProvider([])
+    finder = InstagramFinder(
+        provider, _settings(), profile_client=_StubProfileClient(profiles)
+    )
+
+    match = finder.find(restaurant)
+
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert match.confidence == InstagramConfidence.FAIBLE
+    assert provider.call_count == 0
+
+
 def test_find_scrapes_website_before_ddg(sample_restaurant: Restaurant) -> None:
     sample_restaurant.website = "https://lepetitbistrot.fr/"
     provider = _StubSearchProvider(
@@ -465,6 +495,36 @@ def test_find_accepts_candidate_confirmed_by_profile_bio(sample_restaurant: Rest
     assert match is not None
     assert match.url == "https://www.instagram.com/lepetitbistrot_off/"
     assert match.confidence == InstagramConfidence.ELEVE
+
+
+def test_find_downgrades_matching_name_when_bio_is_in_spain(
+    sample_restaurant: Restaurant,
+) -> None:
+    """Handle identique au nom, mais établissement espagnol → Faible."""
+
+    results = [
+        SearchResult(
+            title="Le Petit Bistrot",
+            url="https://www.instagram.com/lepetitbistrot/",
+        )
+    ]
+    profiles = {
+        "lepetitbistrot": _profile(
+            "lepetitbistrot",
+            full_name="Le Petit Bistrot",
+            biography="Restaurante en Barcelona +34 932 000 000",
+        )
+    }
+    finder = InstagramFinder(
+        _StubSearchProvider(results),
+        _settings(),
+        profile_client=_StubProfileClient(profiles),
+    )
+
+    match = finder.find(sample_restaurant)
+    assert match is not None
+    assert match.url == "https://www.instagram.com/lepetitbistrot/"
+    assert match.confidence == InstagramConfidence.FAIBLE
 
 
 def test_find_only_checks_a_bounded_number_of_profiles(sample_restaurant: Restaurant) -> None:

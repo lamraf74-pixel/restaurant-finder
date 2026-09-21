@@ -99,3 +99,39 @@ def test_confidence_faible_when_no_clear_name_match() -> None:
         biography="Blog photo Paris",
     )
     assert confidence == InstagramConfidence.FAIBLE
+
+
+def test_confidence_faible_when_bio_locates_account_in_spain() -> None:
+    """Nom identique mais bio espagnole → Faible, pas Élevé."""
+
+    confidence = classify_instagram_confidence(
+        "Le Petit Bistrot",
+        "Lyon",
+        "lepetitbistrot",
+        full_name="Le Petit Bistrot",
+        biography="Restaurante en Barcelona 🇪🇸  +34 932 000 000",
+    )
+    assert confidence == InstagramConfidence.FAIBLE
+
+
+def test_confidence_eleve_when_spanish_cuisine_without_foreign_location() -> None:
+    """« cuisine espagnole » n'est pas un lieu : le restaurant français reste Élevé."""
+
+    confidence = classify_instagram_confidence(
+        "Le Petit Bistrot",
+        "Lyon",
+        "lepetitbistrot",
+        full_name="Le Petit Bistrot",
+        biography="Cuisine espagnole et tapas",
+    )
+    assert confidence == InstagramConfidence.ELEVE
+
+
+def test_confidence_eleve_when_french_phone_in_bio() -> None:
+    confidence = classify_instagram_confidence(
+        "Le Petit Bistrot",
+        "Lyon",
+        "lepetitbistrot",
+        biography="Réservations +33 4 72 00 00 00",
+    )
+    assert confidence == InstagramConfidence.ELEVE

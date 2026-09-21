@@ -29,6 +29,10 @@ _TRANSIENT_NETWORK_ERRORS = (
     requests.exceptions.ChunkedEncodingError,
 )
 
+#: ISO 3166-1 alpha-2 : on ne géocode que des villes en France (évite les
+#: homonymes à l'étranger, ex. Paris au Texas, Lyon en Belgique).
+_COUNTRY_CODES = "fr"
+
 
 class NominatimGeocoder:
     """Géocode un nom de ville en `BoundingBox` via l'API Nominatim."""
@@ -59,7 +63,7 @@ class NominatimGeocoder:
             GeocodingError: si la ville est introuvable ou en cas d'erreur réseau.
         """
 
-        cache_key = f"geocode:{city.strip().lower()}"
+        cache_key = f"geocode:{_COUNTRY_CODES}:{city.strip().lower()}"
         if self._cache is not None:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -73,7 +77,12 @@ class NominatimGeocoder:
             response = call_with_retry(
                 lambda: self._session.get(
                     f"{self._settings.nominatim_base_url}/search",
-                    params={"city": city, "format": "jsonv2", "limit": "1"},
+                    params={
+                        "city": city,
+                        "format": "jsonv2",
+                        "limit": "1",
+                        "countrycodes": _COUNTRY_CODES,
+                    },
                     timeout=self._settings.request_timeout_seconds,
                 ),
                 operation=f"Géocodage Nominatim de {city!r}",
